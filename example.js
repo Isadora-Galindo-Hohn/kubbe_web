@@ -1,164 +1,258 @@
 /**
  * example.js
+ * Stabil och korrekt tidsstyrd visning av GeoTIFF‑översvämningsdata i Leaflet
  */
 
+// ----------------------------------------------------
 // Globala variabler
+// ----------------------------------------------------
 let timeSteps = [];
 let currentLayer = null;
-let markerLayerGroup = null;
 let legendControl = null;
 let timeSliderControl = null;
-const baseDataDir = 'floodmaps_mercator/base_cases/hiprad';
-let isLoading = false;
+let baseLayer = null;
 
-// --- Helper funktioner ---
-function formatLegendValue(value) {
-    return Number.isInteger(value) ? value : value.toFixed(1);
+const baseDataDir = 'floodmaps_mercator/base_cases/hiprad';
+
+let currentAbortController = null;
+let requestId = 0;
+
+// ----------------------------------------------------
+// Hjälpfunktioner
+// ----------------------------------------------------
+function isNoDataValue(value, noData) {
+  if (value === null || value === undefined || isNaN(value)) return true;
+  if (noData === undefined || noData === null) return false;
+  if (Array.isArray(noData)) {
+    return noData.some(nd => Number(value) === Number(nd));
+  }
+  return Number(value) === Number(noData);
 }
 
-function isNoDataValue(value, noData) {
-    if (value === null || value === undefined || isNaN(value)) return true;
-    if (Array.isArray(noData)) return noData.some(nd => Number(value) === Number(nd));
-    return Number(value) === Number(noData);
+function rasterHasValidData(georaster) {
+  const band = georaster.values[0];
+  const noData = georaster.noDataValue;
+
+  for (let r = 0; r < band.length; r++) {
+    for (let c = 0; c < band[r].length; c++) {
+      const v = band[r][c];
+      if (!isNoDataValue(v, noData) && v > 0) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function getRasterColor(value) {
-    if (value < 0.5) return '#b3e5fc';
-    if (value < 1.0) return '#81d4fa';
-    if (value < 1.5) return '#4fc3f7';
-    if (value < 2.0) return '#29b6f6';
-    if (value < 4.0) return '#0277bd';
-    return '#01579b';
+  if (value < 0.5) return '#b3e5fc';
+  if (value < 1.0) return '#81d4fa';
+  if (value < 1.5) return '#4fc3f7';
+  if (value < 2.0) return '#29b6f6';
+  if (value < 4.0) return '#0277bd';
+  return '#01579b';
 }
 
-// --- Custom Leaflet Control för Slidern ---
+function clearCurrentRaster() {
+  map.eachLayer(function(layer) {
+    if (layer !== baseLayer) {
+      map.removeLayer(layer);
+    }
+  });
+  console.log(map._layers);
+  currentLayer = null;
+}
+
+// ----------------------------------------------------
+// Tids-slider kontroll
+// ----------------------------------------------------
+
+// (Valfri) Funktion för att formatera tidssteg till mer läsbart format
+// Exempel: "20250911_2000" → "2025-09-11 20:00"
+function formatTextTimeStamp(ts) {
+    if (typeof ts !== 'string' || ts.length < 13) return ts;
+    const datePart = ts.slice(0, 8);
+    const timePart = ts.slice(9, 13);
+    return `${datePart.slice(0,4)}-${datePart.slice(4,6)}-${datePart.slice(6,8)} ${timePart.slice(0,2)}:${timePart.slice(2,4)}`;
+}
+
+function onAddTimeSlider() {
+    const container = L.DomUtil.create('div', 'leaflet-time-control');
+    L.DomEvent.disableClickPropagation(container);
+    L.DomEvent.disableScrollPropagation(container);
+
+    const label = L.DomUtil.create('div', '', container);
+    label.id = 'time-label';
+
+    const input = L.DomUtil.create('input', 'time-slider-input', container);
+    input.type = 'range';
+    input.min = 0;
+    input.step = 1;
+    input.value = 0;
+
+    function onInput() {
+      const index = Number(input.value);
+      this.updateLabel(`Tid: ${formatTextTimeStamp(timeSteps[index]) ?? '–'}`);
+      loadRaster(index);
+    }
+
+    input.addEventListener('input', onInput.bind(this));
+
+    this._input = input;
+    this._label = label;
+    return container;
+}
 L.Control.TimeSlider = L.Control.extend({
-    options: { position: 'bottomleft' },
-    onAdd: function(map) {
-        const container = L.DomUtil.create('div', 'leaflet-time-control');
-        L.DomEvent.disableClickPropagation(container);
-        L.DomEvent.disableScrollPropagation(container);
+  options: { position: 'bottomleft' },
+  updateLabel(text) {
+    if (this._label) {
+      this._label.textContent = text;
+    }
+  },
 
-        this._display = L.DomUtil.create('div', '', container);
-        this._display.id = 'time-display';
-        this._display.style.fontWeight = 'bold';
-        this._display.style.marginBottom = '5px';
-        this._display.style.textAlign = 'center';
-        this._display.innerText = 'Laddar...';
+  onAdd: onAddTimeSlider,
 
-        this._slider = L.DomUtil.create('input', 'time-slider-input', container);
-        this._slider.type = 'range';
-        this._slider.style.width = '200px';
-        this._slider.min = 0;
-        this._slider.max = 0;
-        this._slider.value = 0;
-
-        L.DomEvent.on(this._slider, 'input', (e) => {
-            loadRaster(parseInt(e.target.value));
-        });
-
-        return container;
-    },
-    updateMax: function(max) { this._slider.max = max; },
-    updateDisplay: function(text) { this._display.innerText = text; }
+  updateMax(max) {
+    if (this._input) {
+      this._input.max = max;
+    }
+  },  
 });
 
-// --- Initiera kartan ---
+// ----------------------------------------------------
+// Initiera karta
+// ----------------------------------------------------
 const map = L.map('map').setView([63.51, 18.06], 12);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap'
+const openstreetmap = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+ baseLayer = L.tileLayer(openstreetmap, {
+   attribution: '© OpenStreetMap'
 }).addTo(map);
 
-// Lägg till kontrollerna
+// ----------------------------------------------------
+// Legend
+// ----------------------------------------------------
+legendControl = L.control({ position: 'bottomright' });
+
+legendControl.onAdd = function () {
+  const container = L.DomUtil.create('div', 'info legend');
+  container.style.background = 'rgba(255,255,255,0.97)';
+  container.style.padding = '12px 14px';
+  container.style.borderRadius = '8px';
+  container.style.boxShadow = '0 2px 6px rgba(0,0,0,0.25)';
+  container.style.fontSize = '13px';
+  container.style.color = '#222';
+
+  container.innerHTML = `
+    <strong>Översvämningsdjup (m)</strong><br>
+    <i style="background:#b3e5fc"></i> 0.05–0.5<br>
+    <i style="background:#81d4fa"></i> 0.5–1.0<br>
+    <i style="background:#4fc3f7"></i> 1.0–1.5<br>
+    <i style="background:#29b6f6"></i> 1.5–2.0<br>
+    <i style="background:#0277bd"></i> 2.0–4.0<br>
+    <i style="background:#01579b"></i> >4.0
+  `;
+  this._div = container;
+  return container;
+};
+
+legendControl.addTo(map);
+
+// ----------------------------------------------------
+// Lägg till tidskontroll
+// ----------------------------------------------------
 timeSliderControl = new L.Control.TimeSlider();
 timeSliderControl.addTo(map);
 
-// --- Värdeskala (Legend) Återställd ---
-legendControl = L.control({ position: 'bottomright' });
-legendControl.onAdd = function () {
-    this._div = L.DomUtil.create('div', 'info legend');
-    this._div.style.background = 'rgba(255, 255, 255, 0.97)';
-    this._div.style.padding = '12px 14px';
-    this._div.style.borderRadius = '8px';
-    this._div.style.boxShadow = '0 2px 6px rgba(0,0,0,0.25)';
-    this._div.style.fontSize = '13px';
-    this._div.style.lineHeight = '1.4';
-    this._div.style.color = '#222';
-    L.DomEvent.disableClickPropagation(this._div);
-    return this._div;
-};
-
-legendControl.update = function () {
-    const ranges = [
-        { label: 'Mycket låg', lower: 0.05, upper: 0.5, color: '#b3e5fc' },
-        { label: 'Låg', lower: 0.5, upper: 1.0, color: '#81d4fa' },
-        { label: 'Mellan', lower: 1.0, upper: 1.5, color: '#4fc3f7' },
-        { label: 'Hög', lower: 1.5, upper: 2.0, color: '#29b6f6' },
-        { label: 'Superhög', lower: 2.0, upper: 4.0, color: '#0277bd' },
-        { label: 'Extra hög', lower: 4.0, upper: Infinity, color: '#01579b' }
-    ];
-
-    if (!this._div) return;
-    this._div.innerHTML = '<strong>Värdeskala</strong><br><small>Rastervärde (m vatten)</small>';
-
-    for (const range of ranges) {
-        const upperText = range.upper === Infinity ? '4+' : formatLegendValue(range.upper);
-        this._div.innerHTML +=
-            '<div style="display:flex; align-items:center; margin-top:8px;">'
-            + '<span style="display:inline-block;width:18px;height:14px;margin-right:8px;background:' + range.color + ';border:1px solid #999;"></span>'
-            + '<span><strong>' + range.label + '</strong><br>'
-            + formatLegendValue(range.lower) + ' – ' + upperText + '</span>'
-            + '</div>';
-    }
-};
-legendControl.addTo(map);
-legendControl.update(); // Kör initialt
-
+// ----------------------------------------------------
+// Initiera app
+// ----------------------------------------------------
 async function initApp() {
-    try {
-        const response = await fetch(`${baseDataDir}/manifest.json`);
-        timeSteps = await response.json();
-        if (timeSteps.length > 0) {
-            timeSliderControl.updateMax(timeSteps.length - 1);
-            loadRaster(0);
-        }
-    } catch (err) {
-        timeSliderControl.updateDisplay("Fel: Manifest saknas");
+  try {
+    const response = await fetch(`${baseDataDir}/manifest.json`);
+    timeSteps = await response.json();
+
+    if (!Array.isArray(timeSteps) || timeSteps.length === 0) {
+      timeSliderControl.updateLabel('Ingen data');
+      return;
     }
+
+    timeSliderControl.updateMax(timeSteps.length - 1);
+    loadRaster(0);
+
+  } catch (err) {
+    console.error(err);
+    timeSliderControl.updateLabel('Fel: kan ej läsa manifest');
+  }
 }
 
+// ----------------------------------------------------
+// Ladda och visa raster
+// ----------------------------------------------------
 async function loadRaster(index) {
-    if (isLoading) return;
-    isLoading = true;
+  if (currentAbortController) {
+    currentAbortController.abort();
+  }
+  currentAbortController = new AbortController();
+  const signal = currentAbortController.signal;
 
-    const timeString = timeSteps[index];
-    const url = `${baseDataDir}/${timeString}.tif`;
-    const formattedTime = timeString.replace('_', ' ');
-    
-    timeSliderControl.updateDisplay(`Laddar...`);
+  const localRequestId = ++requestId;
 
-    try {
-        const response = await fetch(url);
-        const arrayBuffer = await response.arrayBuffer();
-        const georaster = await parseGeoraster(arrayBuffer);
-        const noData = georaster.noDataValue;
+  const filename = timeSteps[index];
+  if (!filename) {
+    timeSliderControl.updateLabel('Tid: –');
+    return;
+  }
 
-        if (currentLayer) map.removeLayer(currentLayer);
+  console.log(filename, currentLayer?.filename || "");
 
-        currentLayer = new GeoRasterLayer({
-            georaster: georaster,
-            opacity: 0.7,
-            pixelValuesToColorFn: v => isNoDataValue(v, noData) ? null : getRasterColor(v),
-            resolution: 128
-        });
+  const formattedTime = formatTextTimeStamp(filename);
 
-        currentLayer.addTo(map);
-        timeSliderControl.updateDisplay(`Tid: ${formattedTime}`);
-        isLoading = false;
-    } catch (error) {
-        console.error(error);
-        isLoading = false;
+  if (currentLayer && currentLayer.filename === filename) {
+    timeSliderControl.updateLabel(`Tid: ${formattedTime}`);
+    return;
+  }
+
+  clearCurrentRaster();
+
+  try {
+    const response = await fetch(`${baseDataDir}/${filename}.tif`, { signal });
+
+    if (!response.ok) {
+      timeSliderControl.updateLabel(`Tid: ${formattedTime} – raster saknas`);
+      return;
     }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const georaster = await parseGeoraster(arrayBuffer);
+
+    if (!rasterHasValidData(georaster)) {
+      timeSliderControl.updateLabel(`Tid: ${formattedTime} – ingen översvämning`);
+    }
+
+    if (localRequestId !== requestId) return;
+
+    currentLayer = new GeoRasterLayer({
+      georaster,
+      opacity: 0.7,
+      resolution: 256,
+      pixelValuesToColorFn: value => {
+        if (value === null || value === undefined || isNaN(value)) return null;
+        if (value <= 0) return null;
+        return getRasterColor(value);
+      }
+    });
+
+    currentLayer.filename = filename;
+
+    currentLayer.addTo(map);
+    timeSliderControl.updateLabel(`Tid: ${formattedTime}`);
+
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      timeSliderControl.updateLabel('Fel vid inläsning');
+    }
+  }
 }
 
+// ----------------------------------------------------
 initApp();
