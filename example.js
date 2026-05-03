@@ -1,258 +1,341 @@
-/**
- * example.js
- * Stabil och korrekt tidsstyrd visning av GeoTIFF‑översvämningsdata i Leaflet
- */
-
-// ----------------------------------------------------
-// Globala variabler
-// ----------------------------------------------------
 let timeSteps = [];
-let currentLayer = null;
-let legendControl = null;
+let cases = [];
+let activeTileLayers = {};
+let nextTileLayers = {};
+let metadataByCase = {};
+
 let timeSliderControl = null;
+let caseControl = null;
+let legendControl = null;
 let baseLayer = null;
 
-const baseDataDir = 'floodmaps_mercator/base_cases/hiprad';
+let isPlaying = false;
+let playTimer = null;
+let playSpeedMs = 500;
 
-let currentAbortController = null;
-let requestId = 0;
+const casesJsonPath = 'floodmaps_mercator_tiles/base_cases/cases.json';
 
-// ----------------------------------------------------
-// Hjälpfunktioner
-// ----------------------------------------------------
-function isNoDataValue(value, noData) {
-  if (value === null || value === undefined || isNaN(value)) return true;
-  if (noData === undefined || noData === null) return false;
-  if (Array.isArray(noData)) {
-    return noData.some(nd => Number(value) === Number(nd));
-  }
-  return Number(value) === Number(noData);
+function formatTextTimeStamp(ts) {
+  if (typeof ts !== 'string' || ts.length < 13) return ts;
+  const datePart = ts.slice(0, 8);
+  const timePart = ts.slice(9, 13);
+  return `${datePart.slice(0,4)}-${datePart.slice(4,6)}-${datePart.slice(6,8)} ${timePart.slice(0,2)}:${timePart.slice(2,4)}`;
 }
 
-function rasterHasValidData(georaster) {
-  const band = georaster.values[0];
-  const noData = georaster.noDataValue;
+function getEnabledCases() {
+  return cases.filter(c => c.enabled);
+}
 
-  for (let r = 0; r < band.length; r++) {
-    for (let c = 0; c < band[r].length; c++) {
-      const v = band[r][c];
-      if (!isNoDataValue(v, noData) && v > 0) {
-        return true;
+function getTileUrl(caseItem, time) {
+  return `${caseItem.path}/${time}/{z}/{x}/{y}.png`;
+}
+
+function removeLayerSafe(layer) {
+  if (layer && map.hasLayer(layer)) {
+    map.removeLayer(layer);
+  }
+}
+
+const map = L.map('map').setView([63.51, 18.066], 14);
+
+baseLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap',
+  maxZoom: 19
+}).addTo(map);
+
+function loadTimeIndex(index) {
+  const time = timeSteps[index];
+  if (!time) return;
+
+  timeSliderControl.setValue(index);
+  timeSliderControl.updateLabel(`Tid: ${formatTextTimeStamp(time)}`);
+
+  const enabledCases = getEnabledCases();
+
+  enabledCases.forEach(caseItem => {
+    const oldLayer = activeTileLayers[caseItem.id];
+
+    const newLayer = L.tileLayer(getTileUrl(caseItem, time), {
+        opacity: 0,
+        maxNativeZoom: metadataByCase[caseItem.id]?.zoomMax ?? 16,
+        maxZoom: 19,
+        tms: false,
+        zIndex: 500,
+        errorTileUrl: emptyTile,
+        updateWhenIdle: true,
+        keepBuffer: 2
+    });
+
+    newLayer.once('load', () => {
+      newLayer.setOpacity(caseItem.opacity ?? 0.75);
+
+      if (oldLayer) {
+        setTimeout(() => removeLayerSafe(oldLayer), 120);
       }
-    }
-  }
-  return false;
-}
 
-function getRasterColor(value) {
-  if (value < 0.5) return '#b3e5fc';
-  if (value < 1.0) return '#81d4fa';
-  if (value < 1.5) return '#4fc3f7';
-  if (value < 2.0) return '#29b6f6';
-  if (value < 4.0) return '#0277bd';
-  return '#01579b';
-}
+      activeTileLayers[caseItem.id] = newLayer;
+    });
 
-function clearCurrentRaster() {
-  map.eachLayer(function(layer) {
-    if (layer !== baseLayer) {
-      map.removeLayer(layer);
+    newLayer.addTo(map);
+  });
+
+  Object.keys(activeTileLayers).forEach(caseId => {
+    const stillEnabled = enabledCases.some(c => c.id === caseId);
+    if (!stillEnabled) {
+      removeLayerSafe(activeTileLayers[caseId]);
+      delete activeTileLayers[caseId];
     }
   });
-  console.log(map._layers);
-  currentLayer = null;
+
+  preloadNext(index);
 }
 
-// ----------------------------------------------------
-// Tids-slider kontroll
-// ----------------------------------------------------
+function preloadNext(index) {
+  const nextIndex = Math.min(index + 1, timeSteps.length - 1);
+  const nextTime = timeSteps[nextIndex];
 
-// (Valfri) Funktion för att formatera tidssteg till mer läsbart format
-// Exempel: "20250911_2000" → "2025-09-11 20:00"
-function formatTextTimeStamp(ts) {
-    if (typeof ts !== 'string' || ts.length < 13) return ts;
-    const datePart = ts.slice(0, 8);
-    const timePart = ts.slice(9, 13);
-    return `${datePart.slice(0,4)}-${datePart.slice(4,6)}-${datePart.slice(6,8)} ${timePart.slice(0,2)}:${timePart.slice(2,4)}`;
+  getEnabledCases().forEach(caseItem => {
+    const img = new Image();
+    img.src = getTileUrl(caseItem, nextTime)
+      .replace('{z}', '14')
+      .replace('{x}', '0')
+      .replace('{y}', '0');
+  });
 }
 
 function onAddTimeSlider() {
-    const container = L.DomUtil.create('div', 'leaflet-time-control');
+  const container = L.DomUtil.create('div', 'leaflet-time-control');
+  L.DomEvent.disableClickPropagation(container);
+  L.DomEvent.disableScrollPropagation(container);
+
+  const label = L.DomUtil.create('div', 'time-label', container);
+  label.textContent = 'Tid: –';
+
+  const row = L.DomUtil.create('div', 'time-player-row', container);
+
+  const prevButton = L.DomUtil.create('button', 'time-button', row);
+  prevButton.textContent = '⏮';
+
+  const playButton = L.DomUtil.create('button', 'time-button', row);
+  playButton.textContent = '▶';
+
+  const nextButton = L.DomUtil.create('button', 'time-button', row);
+  nextButton.textContent = '⏭';
+
+  const input = L.DomUtil.create('input', 'time-slider-input', row);
+  input.type = 'range';
+  input.min = 0;
+  input.step = 1;
+  input.value = 0;
+
+  const speed = L.DomUtil.create('select', 'time-button', row);
+  speed.innerHTML = `
+    <option value="1000">1x</option>
+    <option value="500" selected>2x</option>
+    <option value="250">4x</option>
+    <option value="100">10x</option>
+  `;
+
+  input.addEventListener('input', () => {
+    loadTimeIndex(Number(input.value));
+  });
+
+  prevButton.addEventListener('click', () => {
+    const next = Math.max(0, Number(input.value) - 1);
+    loadTimeIndex(next);
+  });
+
+  nextButton.addEventListener('click', () => {
+    const next = Math.min(timeSteps.length - 1, Number(input.value) + 1);
+    loadTimeIndex(next);
+  });
+
+  playButton.addEventListener('click', togglePlay);
+
+  speed.addEventListener('change', () => {
+    playSpeedMs = Number(speed.value);
+    if (isPlaying) {
+      stopPlay();
+      startPlay();
+    }
+  });
+
+  this._input = input;
+  this._label = label;
+  this._playButton = playButton;
+
+  return container;
+}
+
+L.Control.TimeSlider = L.Control.extend({
+  options: { position: 'bottomleft' },
+  onAdd: onAddTimeSlider,
+
+  updateLabel(text) {
+    if (this._label) this._label.textContent = text;
+  },
+
+  updateMax(max) {
+    if (this._input) this._input.max = max;
+  },
+
+  setValue(value) {
+    if (this._input) this._input.value = value;
+  },
+
+  getValue() {
+    return this._input ? Number(this._input.value) : 0;
+  },
+
+  updatePlayButton() {
+    if (this._playButton) {
+      this._playButton.textContent = isPlaying ? '⏸' : '▶';
+    }
+  }
+});
+
+function startPlay() {
+  isPlaying = true;
+  timeSliderControl.updatePlayButton();
+
+  playTimer = setInterval(() => {
+    let index = timeSliderControl.getValue() + 1;
+
+    if (index >= timeSteps.length) {
+      index = 0;
+    }
+
+    loadTimeIndex(index);
+  }, playSpeedMs);
+}
+
+function stopPlay() {
+  isPlaying = false;
+  timeSliderControl.updatePlayButton();
+
+  if (playTimer) {
+    clearInterval(playTimer);
+    playTimer = null;
+  }
+}
+
+function togglePlay() {
+  if (isPlaying) {
+    stopPlay();
+  } else {
+    startPlay();
+  }
+}
+
+L.Control.CaseControl = L.Control.extend({
+  options: { position: 'topleft' },
+
+  onAdd: function () {
+    const container = L.DomUtil.create('div', 'case-control');
     L.DomEvent.disableClickPropagation(container);
     L.DomEvent.disableScrollPropagation(container);
 
-    const label = L.DomUtil.create('div', '', container);
-    label.id = 'time-label';
+    container.innerHTML = `<strong>Lager</strong>`;
 
-    const input = L.DomUtil.create('input', 'time-slider-input', container);
-    input.type = 'range';
-    input.min = 0;
-    input.step = 1;
-    input.value = 0;
+    cases.forEach(caseItem => {
+      const row = L.DomUtil.create('div', 'case-row', container);
 
-    function onInput() {
-      const index = Number(input.value);
-      this.updateLabel(`Tid: ${formatTextTimeStamp(timeSteps[index]) ?? '–'}`);
-      loadRaster(index);
-    }
+      const checkbox = L.DomUtil.create('input', '', row);
+      checkbox.type = 'checkbox';
+      checkbox.checked = caseItem.enabled;
 
-    input.addEventListener('input', onInput.bind(this));
+      const label = L.DomUtil.create('span', '', row);
+      label.textContent = caseItem.name;
 
-    this._input = input;
-    this._label = label;
+      const opacity = L.DomUtil.create('input', '', row);
+      opacity.type = 'range';
+      opacity.min = 0;
+      opacity.max = 1;
+      opacity.step = 0.05;
+      opacity.value = caseItem.opacity ?? 0.75;
+
+      checkbox.addEventListener('change', () => {
+        caseItem.enabled = checkbox.checked;
+        loadTimeIndex(timeSliderControl.getValue());
+      });
+
+      opacity.addEventListener('input', () => {
+        caseItem.opacity = Number(opacity.value);
+
+        const layer = activeTileLayers[caseItem.id];
+        if (layer) {
+          layer.setOpacity(caseItem.opacity);
+        }
+      });
+    });
+
     return container;
-}
-L.Control.TimeSlider = L.Control.extend({
-  options: { position: 'bottomleft' },
-  updateLabel(text) {
-    if (this._label) {
-      this._label.textContent = text;
-    }
-  },
-
-  onAdd: onAddTimeSlider,
-
-  updateMax(max) {
-    if (this._input) {
-      this._input.max = max;
-    }
-  },  
+  }
 });
 
-// ----------------------------------------------------
-// Initiera karta
-// ----------------------------------------------------
-const map = L.map('map').setView([63.51, 18.06], 12);
-const openstreetmap = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
- baseLayer = L.tileLayer(openstreetmap, {
-   attribution: '© OpenStreetMap'
-}).addTo(map);
-
-// ----------------------------------------------------
-// Legend
-// ----------------------------------------------------
 legendControl = L.control({ position: 'bottomright' });
 
 legendControl.onAdd = function () {
   const container = L.DomUtil.create('div', 'info legend');
-  container.style.background = 'rgba(255,255,255,0.97)';
-  container.style.padding = '12px 14px';
-  container.style.borderRadius = '8px';
-  container.style.boxShadow = '0 2px 6px rgba(0,0,0,0.25)';
-  container.style.fontSize = '13px';
-  container.style.color = '#222';
 
   container.innerHTML = `
     <strong>Översvämningsdjup (m)</strong><br>
-    <i style="background:#b3e5fc"></i> 0.05–0.5<br>
-    <i style="background:#81d4fa"></i> 0.5–1.0<br>
-    <i style="background:#4fc3f7"></i> 1.0–1.5<br>
-    <i style="background:#29b6f6"></i> 1.5–2.0<br>
-    <i style="background:#0277bd"></i> 2.0–4.0<br>
-    <i style="background:#01579b"></i> >4.0
+    <i style="background:#ADD8E6"></i> 0.05–0.5<br>
+    <i style="background:#0000FF"></i> 0.5–1.0<br>
+    <i style="background:#00008B"></i> 1.0–1.5<br>
+    <i style="background:#800080"></i> 1.5–2.0<br>
+    <i style="background:#FFA500"></i> 2.0–4.0<br>
+    <i style="background:#FF0000"></i> 4+
   `;
-  this._div = container;
+
   return container;
 };
 
-legendControl.addTo(map);
-
-// ----------------------------------------------------
-// Lägg till tidskontroll
-// ----------------------------------------------------
-timeSliderControl = new L.Control.TimeSlider();
-timeSliderControl.addTo(map);
-
-// ----------------------------------------------------
-// Initiera app
-// ----------------------------------------------------
 async function initApp() {
   try {
-    const response = await fetch(`${baseDataDir}/manifest.json`);
-    timeSteps = await response.json();
+    cases = await fetch(casesJsonPath).then(r => r.json());
 
-    if (!Array.isArray(timeSteps) || timeSteps.length === 0) {
-      timeSliderControl.updateLabel('Ingen data');
+    if (!Array.isArray(cases) || cases.length === 0) {
+      console.error('Inga cases hittades');
       return;
     }
 
+    for (const caseItem of cases) {
+      const manifest = await fetch(`${caseItem.path}/manifest.json`).then(r => r.json());
+      const metadata = await fetch(`${caseItem.path}/metadata.json`).then(r => r.json());
+
+      caseItem.manifest = manifest;
+      metadataByCase[caseItem.id] = metadata;
+    }
+
+    timeSteps = cases[0].manifest;
+
+    timeSliderControl = new L.Control.TimeSlider();
+    timeSliderControl.addTo(map);
     timeSliderControl.updateMax(timeSteps.length - 1);
-    loadRaster(0);
+
+    caseControl = new L.Control.CaseControl();
+    caseControl.addTo(map);
+
+    legendControl.addTo(map);
+
+    const firstMetadata = metadataByCase[cases[0].id];
+
+    if (firstMetadata?.bounds) {
+      map.fitBounds([
+        [firstMetadata.bounds.south, firstMetadata.bounds.west],
+        [firstMetadata.bounds.north, firstMetadata.bounds.east]
+      ]);
+    }
+
+    loadTimeIndex(0);
 
   } catch (err) {
-    console.error(err);
-    timeSliderControl.updateLabel('Fel: kan ej läsa manifest');
+    console.error('Fel vid initiering:', err);
   }
 }
 
-// ----------------------------------------------------
-// Ladda och visa raster
-// ----------------------------------------------------
-async function loadRaster(index) {
-  if (currentAbortController) {
-    currentAbortController.abort();
-  }
-  currentAbortController = new AbortController();
-  const signal = currentAbortController.signal;
-
-  const localRequestId = ++requestId;
-
-  const filename = timeSteps[index];
-  if (!filename) {
-    timeSliderControl.updateLabel('Tid: –');
-    return;
-  }
-
-  console.log(filename, currentLayer?.filename || "");
-
-  const formattedTime = formatTextTimeStamp(filename);
-
-  if (currentLayer && currentLayer.filename === filename) {
-    timeSliderControl.updateLabel(`Tid: ${formattedTime}`);
-    return;
-  }
-
-  clearCurrentRaster();
-
-  try {
-    const response = await fetch(`${baseDataDir}/${filename}.tif`, { signal });
-
-    if (!response.ok) {
-      timeSliderControl.updateLabel(`Tid: ${formattedTime} – raster saknas`);
-      return;
-    }
-
-    const arrayBuffer = await response.arrayBuffer();
-    const georaster = await parseGeoraster(arrayBuffer);
-
-    if (!rasterHasValidData(georaster)) {
-      timeSliderControl.updateLabel(`Tid: ${formattedTime} – ingen översvämning`);
-    }
-
-    if (localRequestId !== requestId) return;
-
-    currentLayer = new GeoRasterLayer({
-      georaster,
-      opacity: 0.7,
-      resolution: 256,
-      pixelValuesToColorFn: value => {
-        if (value === null || value === undefined || isNaN(value)) return null;
-        if (value <= 0) return null;
-        return getRasterColor(value);
-      }
-    });
-
-    currentLayer.filename = filename;
-
-    currentLayer.addTo(map);
-    timeSliderControl.updateLabel(`Tid: ${formattedTime}`);
-
-  } catch (err) {
-    if (err.name !== 'AbortError') {
-      timeSliderControl.updateLabel('Fel vid inläsning');
-    }
-  }
-}
-
-// ----------------------------------------------------
 initApp();
+
+const emptyTile =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lUjK2wAAAABJRU5ErkJggg==';

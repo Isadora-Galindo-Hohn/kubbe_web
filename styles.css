@@ -1,1 +1,69 @@
-#map { height: 80vh; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+}
+
+#map {
+  height: 100vh;
+  width: 100%;
+  background: #f5f5f5;
+}
+
+.legend i {
+  display: inline-block;
+  width: 18px;
+  height: 12px;
+  margin-right: 6px;
+  border: 1px solid #555;
+  vertical-align: middle;
+}
+
+.leaflet-time-control {
+  background: rgba(255,255,255,0.96);
+  padding: 12px 14px;
+  border-radius: 12px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+  min-width: 520px;
+  font-family: system-ui, sans-serif;
+}
+
+.time-player-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.time-slider-input {
+  flex: 1;
+  min-width: 340px;
+}
+
+.time-button {
+  border: 1px solid #aaa;
+  background: white;
+  border-radius: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.time-label {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.case-control {
+  background: rgba(255,255,255,0.96);
+  padding: 12px 14px;
+  border-radius: 12px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+  font-family: system-ui, sans-serif;
+  min-width: 220px;
+}
+
+.case-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
