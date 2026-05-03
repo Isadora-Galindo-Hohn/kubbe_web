@@ -16,7 +16,7 @@ let isPlaying = false;
 let playTimer = null;
 let playSpeedMs = 500;
 
-const casesJsonPath = 'floodmaps_mercator_svg/base_cases/cases.json';
+const casesJsonPath = 'floodmaps_mercator_svg/cases.json';
 
 function formatTextTimeStamp(ts) {
   if (typeof ts !== 'string' || ts.length < 13) return ts;
@@ -47,6 +47,16 @@ function removeLayerSafe(layer) {
   }
 }
 
+const CASE_CATEGORY_LABELS = {
+  base: "Base cases",
+  sensitivity: "Sensitivity cases",
+  combined: "Combined cases"
+};
+
+function getCaseCategory(caseItem) {
+  return caseItem.category || "base";
+}
+
 const map = L.map('map').setView([63.51, 18.066], 14);
 
 baseLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -62,7 +72,23 @@ function loadTimeIndex(index) {
   timeSliderControl.updateLabel(`Tid: ${formatTextTimeStamp(time)}`);
 
   const enabledCases = getEnabledCases();
+  const enabledCaseIds = new Set(enabledCases.map(c => c.id));
   const requestId = ++loadRequestId;
+
+  // Ta först bort lager som inte längre är enabled
+  Object.keys(activeImageLayers).forEach(caseId => {
+    if (!enabledCaseIds.has(caseId)) {
+      removeLayerSafe(activeImageLayers[caseId]);
+      delete activeImageLayers[caseId];
+    }
+  });
+
+  Object.keys(pendingImageLayers).forEach(caseId => {
+    if (!enabledCaseIds.has(caseId)) {
+      removeLayerSafe(pendingImageLayers[caseId]);
+      delete pendingImageLayers[caseId];
+    }
+  });
 
   enabledCases.forEach(caseItem => {
     latestRequestByCase[caseItem.id] = requestId;
@@ -84,11 +110,17 @@ function loadTimeIndex(index) {
 
     pendingImageLayers[caseItem.id] = newLayer;
 
-    newLayer.once('load', () => {
+    newLayer.once("load", () => {
+      const stillEnabled = caseItem.enabled === true;
       const isStillLatest = latestRequestByCase[caseItem.id] === requestId;
 
-      if (!isStillLatest) {
+      if (!stillEnabled || !isStillLatest) {
         removeLayerSafe(newLayer);
+
+        if (pendingImageLayers[caseItem.id] === newLayer) {
+          delete pendingImageLayers[caseItem.id];
+        }
+
         return;
       }
 
@@ -98,13 +130,20 @@ function loadTimeIndex(index) {
 
       newLayer.setOpacity(caseItem.opacity ?? 0.8);
       activeImageLayers[caseItem.id] = newLayer;
-      delete pendingImageLayers[caseItem.id];
+
+      if (pendingImageLayers[caseItem.id] === newLayer) {
+        delete pendingImageLayers[caseItem.id];
+      }
     });
 
-    newLayer.once('error', () => {
+    newLayer.once("error", () => {
       console.warn(`Kunde inte ladda bild: ${imageUrl}`);
+
       removeLayerSafe(newLayer);
-      delete pendingImageLayers[caseItem.id];
+
+      if (pendingImageLayers[caseItem.id] === newLayer) {
+        delete pendingImageLayers[caseItem.id];
+      }
 
       if (oldLayer) {
         removeLayerSafe(oldLayer);
@@ -113,22 +152,6 @@ function loadTimeIndex(index) {
     });
 
     newLayer.addTo(map);
-  });
-
-  Object.keys(activeImageLayers).forEach(caseId => {
-    const stillEnabled = enabledCases.some(c => c.id === caseId);
-    if (!stillEnabled) {
-      removeLayerSafe(activeImageLayers[caseId]);
-      delete activeImageLayers[caseId];
-    }
-  });
-
-  Object.keys(pendingImageLayers).forEach(caseId => {
-    const stillEnabled = enabledCases.some(c => c.id === caseId);
-    if (!stillEnabled) {
-      removeLayerSafe(pendingImageLayers[caseId]);
-      delete pendingImageLayers[caseId];
-    }
   });
 }
 
@@ -194,6 +217,8 @@ function onAddTimeSlider() {
   return container;
 }
 
+
+
 L.Control.TimeSlider = L.Control.extend({
   options: { position: 'bottomleft' },
   onAdd: onAddTimeSlider,
@@ -246,69 +271,266 @@ function togglePlay() {
   isPlaying ? stopPlay() : startPlay();
 }
 
+function createLegend(container) {
+  const legend = L.DomUtil.create("div", "legend-section", container);
+
+  legend.innerHTML = `
+    <div class="panel-title">Legend</div>
+
+    <div class="legend-item">
+      <i style="background:#ADD8E6"></i>
+      <span>0.05–0.5 m</span>
+    </div>
+    <div class="legend-item">
+      <i style="background:#0000FF"></i>
+      <span>0.5–1.0 m</span>
+    </div>
+    <div class="legend-item">
+      <i style="background:#00008B"></i>
+      <span>1.0–1.5 m</span>
+    </div>
+    <div class="legend-item">
+      <i style="background:#800080"></i>
+      <span>1.5–2.0 m</span>
+    </div>
+    <div class="legend-item">
+      <i style="background:#FFA500"></i>
+      <span>2.0–4.0 m</span>
+    </div>
+    <div class="legend-item">
+      <i style="background:#FF0000"></i>
+      <span>4+ m</span>
+    </div>
+  `;
+}
+
+// Case update helpers
+function getCaseById(caseId) {
+  return cases.find(c => c.id === caseId);
+}
+
+function setCaseEnabled(caseId, enabled, shouldReload = true) {
+  const caseItem = getCaseById(caseId);
+  if (!caseItem) return;
+
+  caseItem.enabled = enabled;
+
+  if (!enabled) {
+    if (activeImageLayers[caseId]) {
+      removeLayerSafe(activeImageLayers[caseId]);
+      delete activeImageLayers[caseId];
+    }
+
+    if (pendingImageLayers[caseId]) {
+      removeLayerSafe(pendingImageLayers[caseId]);
+      delete pendingImageLayers[caseId];
+    }
+
+    delete latestRequestByCase[caseId];
+  }
+
+  if (shouldReload) {
+    loadTimeIndex(timeSliderControl.getValue());
+  }
+
+  if (caseControl?.syncUiFromState) {
+    caseControl.syncUiFromState();
+  }
+}
+
+function setCategoryEnabled(category, enabled) {
+  cases
+    .filter(caseItem => getCaseCategory(caseItem) === category)
+    .forEach(caseItem => {
+      setCaseEnabled(caseItem.id, enabled, false);
+    });
+
+  loadTimeIndex(timeSliderControl.getValue());
+
+  if (caseControl?.syncUiFromState) {
+    caseControl.syncUiFromState();
+  }
+}
+
+function setCaseOpacity(caseId, opacity) {
+  const caseItem = getCaseById(caseId);
+  if (!caseItem) return;
+
+  caseItem.opacity = opacity;
+
+  const activeLayer = activeImageLayers[caseId];
+  if (activeLayer) {
+    activeLayer.setOpacity(opacity);
+  }
+
+  const pendingLayer = pendingImageLayers[caseId];
+  if (pendingLayer) {
+    pendingLayer.setOpacity(opacity);
+  }
+
+  if (caseControl?.syncUiFromState) {
+    caseControl.syncUiFromState();
+  }
+}
+// End of case update helpers
+
 L.Control.CaseControl = L.Control.extend({
-  options: { position: 'topleft' },
+  options: { position: "topright" },
 
   onAdd: function () {
-    const container = L.DomUtil.create('div', 'case-control');
+    const container = L.DomUtil.create("div", "left-map-panel");
     L.DomEvent.disableClickPropagation(container);
     L.DomEvent.disableScrollPropagation(container);
 
-    container.innerHTML = `<strong>Lager</strong>`;
+    this._caseCheckboxes = {};
+    this._categoryCheckboxes = {};
+    this._opacitySliders = {};
+    this._opacityValues = {};
 
-    cases.forEach(caseItem => {
-      const row = L.DomUtil.create('div', 'case-row', container);
+    const layerSection = L.DomUtil.create("div", "layer-section", container);
 
-      const checkbox = L.DomUtil.create('input', '', row);
-      checkbox.type = 'checkbox';
-      checkbox.checked = caseItem.enabled;
+    const title = L.DomUtil.create("div", "panel-title", layerSection);
+    title.textContent = "Lager";
 
-      const label = L.DomUtil.create('span', '', row);
-      label.textContent = caseItem.name;
+    const layerList = L.DomUtil.create("div", "layer-list", layerSection);
 
-      const opacity = L.DomUtil.create('input', '', row);
-      opacity.type = 'range';
-      opacity.min = 0;
-      opacity.max = 1;
-      opacity.step = 0.05;
-      opacity.value = caseItem.opacity ?? 0.8;
+    const groupedCases = cases.reduce((groups, caseItem) => {
+      const category = getCaseCategory(caseItem);
 
-      checkbox.addEventListener('change', () => {
-        caseItem.enabled = checkbox.checked;
-        loadTimeIndex(timeSliderControl.getValue());
+      if (!groups[category]) {
+        groups[category] = [];
+      }
+
+      groups[category].push(caseItem);
+      return groups;
+    }, {});
+
+    const categoryOrder = ["base", "sensitivity", "combined"];
+
+    categoryOrder.forEach(category => {
+      const categoryCases = groupedCases[category];
+
+      if (!categoryCases || categoryCases.length === 0) return;
+
+      const categoryBlock = L.DomUtil.create("div", "case-category", layerList);
+
+      const categoryHeader = L.DomUtil.create("label", "case-category-header", categoryBlock);
+
+      const categoryCheckBox = L.DomUtil.create("input", "case-category-checkbox", categoryHeader);
+      categoryCheckBox.type = "checkbox";
+
+      const categoryTitle = L.DomUtil.create("span", "case-category-title", categoryHeader);
+      categoryTitle.textContent = CASE_CATEGORY_LABELS[category] || category;
+
+      this._categoryCheckboxes[category] = categoryCheckBox;
+
+      categoryCheckBox.addEventListener("change", () => {
+        setCategoryEnabled(category, categoryCheckBox.checked);
       });
 
-      opacity.addEventListener('input', () => {
-        caseItem.opacity = Number(opacity.value);
+      categoryCases.forEach(caseItem => {
+        const row = L.DomUtil.create("div", "case-row", categoryBlock);
 
-        const layer = activeImageLayers[caseItem.id];
-        if (layer) {
-          layer.setOpacity(caseItem.opacity);
+        const header = L.DomUtil.create("div", "case-row-header", row);
+
+        const checkbox = L.DomUtil.create("input", "case-checkbox", header);
+        checkbox.type = "checkbox";
+
+        this._caseCheckboxes[caseItem.id] = checkbox;
+
+        checkbox.addEventListener("change", () => {
+          setCaseEnabled(caseItem.id, checkbox.checked);
+        });
+
+        const label = L.DomUtil.create("button", "case-disclosure-button", header);
+        label.type = "button";
+        label.textContent = caseItem.name;
+
+        const arrow = L.DomUtil.create("span", "case-disclosure-arrow", header);
+        arrow.textContent = "🡣";
+
+        const details = L.DomUtil.create("div", "case-row-details", row);
+
+        const opacityLabel = L.DomUtil.create("label", "opacity-label", details);
+        opacityLabel.textContent = "Opacity";
+
+        const opacity = L.DomUtil.create("input", "opacity-slider", details);
+        opacity.type = "range";
+        opacity.min = 0;
+        opacity.max = 1;
+        opacity.step = 0.05;
+
+        const opacityValue = L.DomUtil.create("span", "opacity-value", details);
+
+        this._opacitySliders[caseItem.id] = opacity;
+        this._opacityValues[caseItem.id] = opacityValue;
+
+        let isOpen = false;
+
+        function setOpen(open) {
+          isOpen = open;
+          row.classList.toggle("is-open", isOpen);
+          arrow.textContent = isOpen ? "🡡" : "🡣";
         }
+
+        label.addEventListener("click", () => {
+          setOpen(!isOpen);
+        });
+
+        arrow.addEventListener("click", () => {
+          setOpen(!isOpen);
+        });
+
+        opacity.addEventListener("input", () => {
+          setCaseOpacity(caseItem.id, Number(opacity.value));
+        });
       });
     });
 
+    createLegend(container);
+
+    this.syncUiFromState();
+
     return container;
+  },
+
+  syncUiFromState: function () {
+    cases.forEach(caseItem => {
+      const checkbox = this._caseCheckboxes?.[caseItem.id];
+      const opacitySlider = this._opacitySliders?.[caseItem.id];
+      const opacityValue = this._opacityValues?.[caseItem.id];
+
+      if (checkbox) {
+        checkbox.checked = caseItem.enabled === true;
+      }
+
+      if (opacitySlider) {
+        opacitySlider.value = caseItem.opacity ?? 0.8;
+      }
+
+      if (opacityValue) {
+        opacityValue.textContent = `${Math.round((caseItem.opacity ?? 0.8) * 100)}%`;
+      }
+    });
+
+    Object.keys(this._categoryCheckboxes || {}).forEach(category => {
+      const categoryCases = cases.filter(caseItem => getCaseCategory(caseItem) === category);
+      const categoryCheckbox = this._categoryCheckboxes[category];
+
+      const enabledCount = categoryCases.filter(caseItem => caseItem.enabled).length;
+
+      categoryCheckbox.checked = enabledCount === categoryCases.length;
+      categoryCheckbox.indeterminate = enabledCount > 0 && enabledCount < categoryCases.length;
+    });
   }
 });
 
-legendControl = L.control({ position: 'bottomright' });
 
-legendControl.onAdd = function () {
-  const container = L.DomUtil.create('div', 'info legend');
-
-  container.innerHTML = `
-    <strong>Översvämningsdjup (m)</strong><br>
-    <i style="background:#ADD8E6"></i> 0.05–0.5<br>
-    <i style="background:#0000FF"></i> 0.5–1.0<br>
-    <i style="background:#00008B"></i> 1.0–1.5<br>
-    <i style="background:#800080"></i> 1.5–2.0<br>
-    <i style="background:#FFA500"></i> 2.0–4.0<br>
-    <i style="background:#FF0000"></i> 4+
-  `;
-
-  return container;
-};
+L.control.scale({
+  position: "topleft",
+  metric: true,
+  imperial: false
+}).addTo(map);
 
 async function initApp() {
   try {
@@ -327,8 +549,6 @@ async function initApp() {
 
     caseControl = new L.Control.CaseControl();
     caseControl.addTo(map);
-
-    legendControl.addTo(map);
 
     const firstMetadata = metadataByCase[cases[0].id];
     if (firstMetadata?.bounds) {
