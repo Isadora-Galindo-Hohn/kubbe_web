@@ -8,9 +8,9 @@ import rasterio
 import mercantile
 
 from PIL import Image
-from rasterio.vrt import WarpedVRT
 from rasterio.enums import Resampling
-from rasterio.warp import transform_bounds
+from rasterio.warp import reproject
+from rasterio.transform import from_bounds
 
 
 # ----------------------------------------------------
@@ -126,103 +126,87 @@ def make_tiles_for_file(file_path, time_name):
 
         actual_nodata = src.nodata if src.nodata is not None else nodata_value
 
-        with WarpedVRT(
-            src,
-            src_crs=source_crs,
-            crs=dst_crs,
-            nodata=nodata_value,
-            src_nodata=actual_nodata,
-            dst_nodata=nodata_value,
-            resampling=Resampling.nearest
-        ) as vrt:
+        bounds_4326_tuple = transform_bounds(
+            source_crs,
+            "EPSG:4326",
+            src.bounds.left,
+            src.bounds.bottom,
+            src.bounds.right,
+            src.bounds.top,
+            densify_pts=21
+        )
 
-            bounds_3857 = {
-                "left": vrt.bounds.left,
-                "bottom": vrt.bounds.bottom,
-                "right": vrt.bounds.right,
-                "top": vrt.bounds.top
-            }
+        west, south, east, north = bounds_4326_tuple
 
-            bounds_4326_tuple = transform_bounds(
-                dst_crs,
-                "EPSG:4326",
-                vrt.bounds.left,
-                vrt.bounds.bottom,
-                vrt.bounds.right,
-                vrt.bounds.top,
-                densify_pts=21
-            )
+        bounds_4326 = {
+            "west": west,
+            "south": south,
+            "east": east,
+            "north": north
+        }
 
-            west, south, east, north = bounds_4326_tuple
+        total_tiles = 0
+        written_tiles = 0
 
-            bounds_4326 = {
-                "west": west,
-                "south": south,
-                "east": east,
-                "north": north
-            }
+        for z in range(zoom_min, zoom_max + 1):
+            tiles = list(mercantile.tiles(west, south, east, north, [z]))
 
-            total_tiles = 0
-            written_tiles = 0
+            for tile in tiles:
+                total_tiles += 1
 
-            for z in range(zoom_min, zoom_max + 1):
-                tiles = get_tile_range(bounds_4326, z)
+                tb = mercantile.xy_bounds(tile)
 
-                for tile in tiles:
-                    tile_bounds = mercantile.xy_bounds(tile)
+                dst_transform = from_bounds(
+                    tb.left,
+                    tb.bottom,
+                    tb.right,
+                    tb.top,
+                    tile_size,
+                    tile_size
+                )
 
-                    tile_bounds_3857 = {
-                        "left": tile_bounds.left,
-                        "bottom": tile_bounds.bottom,
-                        "right": tile_bounds.right,
-                        "top": tile_bounds.top
-                    }
+                data = np.full(
+                    (tile_size, tile_size),
+                    nodata_value,
+                    dtype=np.float32
+                )
 
-                    if not intersects(tile_bounds_3857, bounds_3857):
-                        continue
+                reproject(
+                    source=rasterio.band(src, 1),
+                    destination=data,
+                    src_transform=src.transform,
+                    src_crs=source_crs,
+                    src_nodata=actual_nodata,
+                    dst_transform=dst_transform,
+                    dst_crs=dst_crs,
+                    dst_nodata=nodata_value,
+                    resampling=Resampling.nearest
+                )
 
-                    total_tiles += 1
+                # Extra säkerhet: allt orimligt blir transparent
+                data[~np.isfinite(data)] = nodata_value
+                data[data == actual_nodata] = nodata_value
+                data[data < 0.05] = nodata_value
+                data[data > 50] = nodata_value
 
-                    window = vrt.window(
-                        tile_bounds.left,
-                        tile_bounds.bottom,
-                        tile_bounds.right,
-                        tile_bounds.top
-                    )
+                rgba = classify_to_rgba(data, nodata=nodata_value)
 
-                    data = vrt.read(
-                        1,
-                        window=window,
-                        out_shape=(tile_size, tile_size),
-                        fill_value=nodata_value,
-                        resampling=Resampling.nearest
-                    ).astype(np.float32)
+                if skip_empty_tiles and np.all(rgba[:, :, 3] == 0):
+                    continue
 
-                    if actual_nodata != nodata_value:
-                        data[data == actual_nodata] = nodata_value
+                tile_path = os.path.join(
+                    tiles_output_path,
+                    str(z),
+                    str(tile.x),
+                    f"{tile.y}.png"
+                )
 
-                    rgba = classify_to_rgba(data, nodata=nodata_value)
+                save_png_tile(rgba, tile_path)
+                written_tiles += 1
 
-                    if skip_empty_tiles and np.all(rgba[:, :, 3] == 0):
-                        continue
+        print(f"Klar: {time_name} | tiles skapade: {written_tiles}/{total_tiles}")
 
-                    tile_path = os.path.join(
-                        tiles_output_path,
-                        str(z),
-                        str(tile.x),
-                        f"{tile.y}.png"
-                    )
-
-                    save_png_tile(rgba, tile_path)
-                    written_tiles += 1
-
-            valid_status = "OK"
-            print(
-                f"Klar: {time_name} | tiles skapade: {written_tiles}/{total_tiles} | {valid_status}"
-            )
-
-            return bounds_4326, written_tiles
-
+        return bounds_4326, written_tiles
 
 # ----------------------------------------------------
 # HUVUDLOOP
