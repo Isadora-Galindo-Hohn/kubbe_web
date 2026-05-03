@@ -1,9 +1,9 @@
 let timeSteps = [];
 let cases = [];
-let nextTileLayers = {};
 let metadataByCase = {};
-let activeTileLayers = {};
-let pendingTileLayers = {};
+
+let activeImageLayers = {};
+let pendingImageLayers = {};
 let latestRequestByCase = {};
 let loadRequestId = 0;
 
@@ -16,12 +16,7 @@ let isPlaying = false;
 let playTimer = null;
 let playSpeedMs = 500;
 
-
-
-const emptyTile =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lUjK2wAAAABJRU5ErkJggg==';
-
-const casesJsonPath = 'floodmaps_mercator_tiles/base_cases/cases.json';
+const casesJsonPath = 'floodmaps_mercator_png/base_cases/cases.json';
 
 function formatTextTimeStamp(ts) {
   if (typeof ts !== 'string' || ts.length < 13) return ts;
@@ -34,8 +29,16 @@ function getEnabledCases() {
   return cases.filter(c => c.enabled);
 }
 
-function getTileUrl(caseItem, time) {
-  return `${caseItem.path}/${time}/{z}/{x}/{y}.png`;
+function getImageUrl(caseItem, time) {
+  return `${caseItem.path}/${time}.png`;
+}
+
+function getBounds(caseItem) {
+  const metadata = metadataByCase[caseItem.id];
+  return [
+    [metadata.bounds.south, metadata.bounds.west],
+    [metadata.bounds.north, metadata.bounds.east]
+  ];
 }
 
 function removeLayerSafe(layer) {
@@ -64,27 +67,22 @@ function loadTimeIndex(index) {
   enabledCases.forEach(caseItem => {
     latestRequestByCase[caseItem.id] = requestId;
 
-    if (pendingTileLayers[caseItem.id]) {
-      removeLayerSafe(pendingTileLayers[caseItem.id]);
-      delete pendingTileLayers[caseItem.id];
+    if (pendingImageLayers[caseItem.id]) {
+      removeLayerSafe(pendingImageLayers[caseItem.id]);
+      delete pendingImageLayers[caseItem.id];
     }
 
-    const oldLayer = activeTileLayers[caseItem.id];
+    const oldLayer = activeImageLayers[caseItem.id];
+    const imageUrl = getImageUrl(caseItem, time);
+    const bounds = getBounds(caseItem);
 
-    const newLayer = L.tileLayer(getTileUrl(caseItem, time), {
+    const newLayer = L.imageOverlay(imageUrl, bounds, {
       opacity: 0,
-      minNativeZoom: 14,
-      maxNativeZoom: 14,
-      minZoom: 10,
-      maxZoom: 18,
-      tms: false,
-      zIndex: 500,
-      errorTileUrl: emptyTile,
-      updateWhenIdle: true,
-      keepBuffer: 1
+      interactive: false,
+      zIndex: 500
     });
 
-    pendingTileLayers[caseItem.id] = newLayer;
+    pendingImageLayers[caseItem.id] = newLayer;
 
     newLayer.once('load', () => {
       const isStillLatest = latestRequestByCase[caseItem.id] === requestId;
@@ -98,44 +96,39 @@ function loadTimeIndex(index) {
         removeLayerSafe(oldLayer);
       }
 
-      newLayer.setOpacity(caseItem.opacity ?? 0.75);
-      activeTileLayers[caseItem.id] = newLayer;
+      newLayer.setOpacity(caseItem.opacity ?? 0.8);
+      activeImageLayers[caseItem.id] = newLayer;
+      delete pendingImageLayers[caseItem.id];
+    });
 
-      delete pendingTileLayers[caseItem.id];
+    newLayer.once('error', () => {
+      console.warn(`Kunde inte ladda bild: ${imageUrl}`);
+      removeLayerSafe(newLayer);
+      delete pendingImageLayers[caseItem.id];
+
+      if (oldLayer) {
+        removeLayerSafe(oldLayer);
+        delete activeImageLayers[caseItem.id];
+      }
     });
 
     newLayer.addTo(map);
   });
 
-  Object.keys(activeTileLayers).forEach(caseId => {
+  Object.keys(activeImageLayers).forEach(caseId => {
     const stillEnabled = enabledCases.some(c => c.id === caseId);
-
     if (!stillEnabled) {
-      removeLayerSafe(activeTileLayers[caseId]);
-      delete activeTileLayers[caseId];
+      removeLayerSafe(activeImageLayers[caseId]);
+      delete activeImageLayers[caseId];
     }
   });
 
-  Object.keys(pendingTileLayers).forEach(caseId => {
+  Object.keys(pendingImageLayers).forEach(caseId => {
     const stillEnabled = enabledCases.some(c => c.id === caseId);
-
     if (!stillEnabled) {
-      removeLayerSafe(pendingTileLayers[caseId]);
-      delete pendingTileLayers[caseId];
+      removeLayerSafe(pendingImageLayers[caseId]);
+      delete pendingImageLayers[caseId];
     }
-  });
-}
-
-function preloadNext(index) {
-  const nextIndex = Math.min(index + 1, timeSteps.length - 1);
-  const nextTime = timeSteps[nextIndex];
-
-  getEnabledCases().forEach(caseItem => {
-    const img = new Image();
-    img.src = getTileUrl(caseItem, nextTime)
-      .replace('{z}', '14')
-      .replace('{x}', '0')
-      .replace('{y}', '0');
   });
 }
 
@@ -177,13 +170,11 @@ function onAddTimeSlider() {
   });
 
   prevButton.addEventListener('click', () => {
-    const next = Math.max(0, Number(input.value) - 1);
-    loadTimeIndex(next);
+    loadTimeIndex(Math.max(0, Number(input.value) - 1));
   });
 
   nextButton.addEventListener('click', () => {
-    const next = Math.min(timeSteps.length - 1, Number(input.value) + 1);
-    loadTimeIndex(next);
+    loadTimeIndex(Math.min(timeSteps.length - 1, Number(input.value) + 1));
   });
 
   playButton.addEventListener('click', togglePlay);
@@ -236,11 +227,7 @@ function startPlay() {
 
   playTimer = setInterval(() => {
     let index = timeSliderControl.getValue() + 1;
-
-    if (index >= timeSteps.length) {
-      index = 0;
-    }
-
+    if (index >= timeSteps.length) index = 0;
     loadTimeIndex(index);
   }, playSpeedMs);
 }
@@ -256,11 +243,7 @@ function stopPlay() {
 }
 
 function togglePlay() {
-  if (isPlaying) {
-    stopPlay();
-  } else {
-    startPlay();
-  }
+  isPlaying ? stopPlay() : startPlay();
 }
 
 L.Control.CaseControl = L.Control.extend({
@@ -288,7 +271,7 @@ L.Control.CaseControl = L.Control.extend({
       opacity.min = 0;
       opacity.max = 1;
       opacity.step = 0.05;
-      opacity.value = caseItem.opacity ?? 0.75;
+      opacity.value = caseItem.opacity ?? 0.8;
 
       checkbox.addEventListener('change', () => {
         caseItem.enabled = checkbox.checked;
@@ -298,7 +281,7 @@ L.Control.CaseControl = L.Control.extend({
       opacity.addEventListener('input', () => {
         caseItem.opacity = Number(opacity.value);
 
-        const layer = activeTileLayers[caseItem.id];
+        const layer = activeImageLayers[caseItem.id];
         if (layer) {
           layer.setOpacity(caseItem.opacity);
         }
@@ -331,17 +314,9 @@ async function initApp() {
   try {
     cases = await fetch(casesJsonPath).then(r => r.json());
 
-    if (!Array.isArray(cases) || cases.length === 0) {
-      console.error('Inga cases hittades');
-      return;
-    }
-
     for (const caseItem of cases) {
-      const manifest = await fetch(`${caseItem.path}/manifest.json`).then(r => r.json());
-      const metadata = await fetch(`${caseItem.path}/metadata.json`).then(r => r.json());
-
-      caseItem.manifest = manifest;
-      metadataByCase[caseItem.id] = metadata;
+      caseItem.manifest = await fetch(`${caseItem.path}/manifest.json`).then(r => r.json());
+      metadataByCase[caseItem.id] = await fetch(`${caseItem.path}/metadata.json`).then(r => r.json());
     }
 
     timeSteps = cases[0].manifest;
@@ -356,7 +331,6 @@ async function initApp() {
     legendControl.addTo(map);
 
     const firstMetadata = metadataByCase[cases[0].id];
-
     if (firstMetadata?.bounds) {
       map.fitBounds([
         [firstMetadata.bounds.south, firstMetadata.bounds.west],
@@ -372,4 +346,3 @@ async function initApp() {
 }
 
 initApp();
-

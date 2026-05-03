@@ -5,45 +5,31 @@ import shutil
 
 import numpy as np
 import rasterio
-import mercantile
-
 from PIL import Image
 from rasterio.vrt import WarpedVRT
 from rasterio.enums import Resampling
-from rasterio.warp import reproject
-from rasterio.transform import from_bounds
-from rasterio.warp import (
-    reproject,
-    transform_bounds,
-    Resampling
-)
+from rasterio.warp import transform_bounds
 
 
 # ----------------------------------------------------
 # KONFIGURATION
 # ----------------------------------------------------
 input_dir = r'C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\hiprad\base_hiprad\postprocessed\run0'
-output_dir = r'C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_tiles\base_cases\hiprad'
+output_dir = r'C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_png\base_cases\hiprad'
 
 case_id = "hiprad"
 case_name = "HIPRAD"
 
 src_crs_fallback = "EPSG:3006"
 dst_crs = "EPSG:3857"
-
 nodata_value = -9999.0
+upscale_factor = 4
 
-zoom_min = 14
-zoom_max = 14
+web_case_path = "floodmaps_mercator_png/base_cases/hiprad"
 
-tile_size = 256
-
-# True = sparar bara tiles där översvämning finns
-# False = sparar även tomma transparenta tiles
-skip_empty_tiles = False
-
-# Detta ska matcha hur webben når filerna
-web_case_path = "floodmaps_mercator_tiles/base_cases/hiprad"
+# Rensa gammal output för detta case
+if os.path.exists(output_dir):
+    shutil.rmtree(output_dir)
 
 os.makedirs(output_dir, exist_ok=True)
 
@@ -57,7 +43,6 @@ def classify_to_rgba(data, nodata=nodata_value):
 
     data = data.astype(np.float32)
 
-    # Allt som inte är verkligt översvämningsdjup blir transparent
     invalid = (
         ~np.isfinite(data) |
         (data == nodata) |
@@ -92,40 +77,16 @@ def parse_time_name(file_name):
     return f"{clean_name[0]}_{clean_name[1]}"
 
 
-def intersects(a, b):
-    return not (
-        a["right"] <= b["left"] or
-        a["left"] >= b["right"] or
-        a["top"] <= b["bottom"] or
-        a["bottom"] >= b["top"]
-    )
-
-
-def get_tile_range(bounds_4326, zoom):
-    west = bounds_4326["west"]
-    south = bounds_4326["south"]
-    east = bounds_4326["east"]
-    north = bounds_4326["north"]
-
-    tiles = list(mercantile.tiles(west, south, east, north, [zoom]))
-
-    return tiles
-
-
-def save_png_tile(rgba, output_path):
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+def save_png(rgba, output_path):
     img = Image.fromarray(rgba, mode="RGBA")
     img.save(output_path, optimize=True)
 
 
-def make_tiles_for_file(file_path, time_name):
-    tiles_output_path = os.path.join(output_dir, time_name)
-
-    if os.path.exists(tiles_output_path):
-        shutil.rmtree(tiles_output_path)
+def make_png_for_file(file_path, time_name):
+    png_output_path = os.path.join(output_dir, f"{time_name}.png")
 
     with rasterio.open(file_path) as src:
-        source_crs = rasterio.crs.CRS.from_epsg(3006)
+        source_crs = src.crs if src.crs is not None else src_crs_fallback
 
         if src.crs is None:
             print(f"Obs: {os.path.basename(file_path)} saknar CRS, antar {src_crs_fallback}")
@@ -139,8 +100,27 @@ def make_tiles_for_file(file_path, time_name):
             nodata=nodata_value,
             src_nodata=actual_nodata,
             dst_nodata=nodata_value,
-            resampling=Resampling.nearest
+            resampling=Resampling.bilinear
         ) as vrt:
+
+            out_height = vrt.height * upscale_factor
+            out_width = vrt.width * upscale_factor
+
+            data = vrt.read(
+                1,
+                out_shape=(out_height, out_width),
+                fill_value=nodata_value,
+                resampling=Resampling.bilinear
+            ).astype(np.float32)
+
+            data[~np.isfinite(data)] = nodata_value
+            data[data == actual_nodata] = nodata_value
+            data[data < 0.05] = nodata_value
+            data[data > 50] = nodata_value
+
+            rgba = classify_to_rgba(data, nodata=nodata_value)
+
+            save_png(rgba, png_output_path)
 
             bounds_4326_tuple = transform_bounds(
                 dst_crs,
@@ -161,61 +141,23 @@ def make_tiles_for_file(file_path, time_name):
                 "north": north
             }
 
-            total_tiles = 0
-            written_tiles = 0
+            visible_pixels = np.count_nonzero(rgba[:, :, 3])
 
-            for z in range(zoom_min, zoom_max + 1):
-                tiles = list(mercantile.tiles(west, south, east, north, [z]))
+            print(
+                f"Klar: {time_name}.png | "
+                f"storlek: {rgba.shape[1]}x{rgba.shape[0]} | "
+                f"synliga pixlar: {visible_pixels}"
+            )
 
-                for tile in tiles:
-                    total_tiles += 1
+            return bounds_4326, visible_pixels
 
-                    tb = mercantile.xy_bounds(tile)
 
-                    window = vrt.window(
-                        tb.left,
-                        tb.bottom,
-                        tb.right,
-                        tb.top
-                    )
-
-                    data = vrt.read(
-                        1,
-                        window=window,
-                        out_shape=(tile_size, tile_size),
-                        fill_value=nodata_value,
-                        resampling=Resampling.nearest
-                    ).astype(np.float32)
-
-                    data[~np.isfinite(data)] = nodata_value
-                    data[data == actual_nodata] = nodata_value
-                    data[data < 0.05] = nodata_value
-                    data[data > 50] = nodata_value
-
-                    rgba = classify_to_rgba(data, nodata=nodata_value)
-
-                    if skip_empty_tiles and np.all(rgba[:, :, 3] == 0):
-                        continue
-
-                    tile_path = os.path.join(
-                        tiles_output_path,
-                        str(z),
-                        str(tile.x),
-                        f"{tile.y}.png"
-                    )
-
-                    save_png_tile(rgba, tile_path)
-                    written_tiles += 1
-
-            print(f"Klar: {time_name} | tiles skapade: {written_tiles}/{total_tiles}")
-
-            return bounds_4326, written_tiles
 # ----------------------------------------------------
 # HUVUDLOOP
 # ----------------------------------------------------
 files = sorted(glob.glob(os.path.join(input_dir, "res-*.tif")))
 
-print(f"Hittade {len(files)} filer. Startar tile-export med rasterio + mercantile...")
+print(f"Hittade {len(files)} filer. Startar export till stora PNG-overlays...")
 
 all_bounds_4326 = []
 generated_time_steps = []
@@ -229,14 +171,13 @@ for file_path in files:
         continue
 
     try:
-        bounds_4326, written_tiles = make_tiles_for_file(file_path, time_name)
+        bounds_4326, visible_pixels = make_png_for_file(file_path, time_name)
 
         all_bounds_4326.append(bounds_4326)
-
         generated_time_steps.append(time_name)
 
-        if written_tiles == 0:
-            print(f"Inga synliga tiles skapades för {time_name} men tidssteget sparas i manifest.")
+        if visible_pixels == 0:
+            print(f"Ingen översvämning synlig för {time_name}, men PNG och tidssteg sparas.")
 
     except Exception as e:
         print(f"Fel för {time_name}: {e}")
@@ -280,12 +221,8 @@ if all_bounds_4326:
         ],
         "opacityDefault": 0.8,
         "timeStepHours": 1,
-        "fileType": "tiles",
-        "tileUrlTemplate": "{time}/{z}/{x}/{y}.png",
-        "zoomMin": zoom_min,
-        "zoomMax": zoom_max,
-        "tileScheme": "xyz",
-        "skipEmptyTiles": skip_empty_tiles
+        "fileType": "png",
+        "imageUrlTemplate": "{time}.png"
     }
 
     metadata_path = os.path.join(output_dir, "metadata.json")
