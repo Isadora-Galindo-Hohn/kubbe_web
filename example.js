@@ -1,8 +1,11 @@
 let timeSteps = [];
 let cases = [];
-let activeTileLayers = {};
 let nextTileLayers = {};
 let metadataByCase = {};
+let activeTileLayers = {};
+let pendingTileLayers = {};
+let latestRequestByCase = {};
+let loadRequestId = 0;
 
 let timeSliderControl = null;
 let caseControl = null;
@@ -12,6 +15,11 @@ let baseLayer = null;
 let isPlaying = false;
 let playTimer = null;
 let playSpeedMs = 500;
+
+
+
+const emptyTile =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lUjK2wAAAABJRU5ErkJggg==';
 
 const casesJsonPath = 'floodmaps_mercator_tiles/base_cases/cases.json';
 
@@ -51,29 +59,47 @@ function loadTimeIndex(index) {
   timeSliderControl.updateLabel(`Tid: ${formatTextTimeStamp(time)}`);
 
   const enabledCases = getEnabledCases();
+  const requestId = ++loadRequestId;
 
   enabledCases.forEach(caseItem => {
+    latestRequestByCase[caseItem.id] = requestId;
+
+    if (pendingTileLayers[caseItem.id]) {
+      removeLayerSafe(pendingTileLayers[caseItem.id]);
+      delete pendingTileLayers[caseItem.id];
+    }
+
     const oldLayer = activeTileLayers[caseItem.id];
 
     const newLayer = L.tileLayer(getTileUrl(caseItem, time), {
-        opacity: 0,
-        maxNativeZoom: metadataByCase[caseItem.id]?.zoomMax ?? 16,
-        maxZoom: 19,
-        tms: false,
-        zIndex: 500,
-        errorTileUrl: emptyTile,
-        updateWhenIdle: true,
-        keepBuffer: 2
+      opacity: 0,
+      maxNativeZoom: metadataByCase[caseItem.id]?.zoomMax ?? 14,
+      maxZoom: 18,
+      tms: false,
+      zIndex: 500,
+      errorTileUrl: emptyTile,
+      updateWhenIdle: true,
+      keepBuffer: 1
     });
 
-    newLayer.once('load', () => {
-      newLayer.setOpacity(caseItem.opacity ?? 0.75);
+    pendingTileLayers[caseItem.id] = newLayer;
 
-      if (oldLayer) {
-        setTimeout(() => removeLayerSafe(oldLayer), 120);
+    newLayer.once('load', () => {
+      const isStillLatest = latestRequestByCase[caseItem.id] === requestId;
+
+      if (!isStillLatest) {
+        removeLayerSafe(newLayer);
+        return;
       }
 
+      if (oldLayer) {
+        removeLayerSafe(oldLayer);
+      }
+
+      newLayer.setOpacity(caseItem.opacity ?? 0.75);
       activeTileLayers[caseItem.id] = newLayer;
+
+      delete pendingTileLayers[caseItem.id];
     });
 
     newLayer.addTo(map);
@@ -81,13 +107,21 @@ function loadTimeIndex(index) {
 
   Object.keys(activeTileLayers).forEach(caseId => {
     const stillEnabled = enabledCases.some(c => c.id === caseId);
+
     if (!stillEnabled) {
       removeLayerSafe(activeTileLayers[caseId]);
       delete activeTileLayers[caseId];
     }
   });
 
-  preloadNext(index);
+  Object.keys(pendingTileLayers).forEach(caseId => {
+    const stillEnabled = enabledCases.some(c => c.id === caseId);
+
+    if (!stillEnabled) {
+      removeLayerSafe(pendingTileLayers[caseId]);
+      delete pendingTileLayers[caseId];
+    }
+  });
 }
 
 function preloadNext(index) {
@@ -337,5 +371,3 @@ async function initApp() {
 
 initApp();
 
-const emptyTile =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lUjK2wAAAABJRU5ErkJggg==';
