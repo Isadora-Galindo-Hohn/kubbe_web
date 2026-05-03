@@ -24,7 +24,9 @@ case_name = "HIPRAD"
 src_crs_fallback = "EPSG:3006"
 dst_crs = "EPSG:3857"
 nodata_value = -9999.0
-upscale_factor = 4
+
+# SVG bör helst köras 1:1 först. Höj bara om du verkligen vill testa.
+upscale_factor = 1
 
 # Börja med 4. Högre värde kan bli snabbare men använda mycket RAM.
 max_workers = 8
@@ -33,37 +35,40 @@ web_case_path = "floodmaps_mercator_png/base_cases/hiprad"
 
 
 # ----------------------------------------------------
-# FÄRGSÄTTNING
+# KLASSNING
 # ----------------------------------------------------
-def classify_to_rgba(data, nodata=nodata_value):
-    height, width = data.shape
-    rgba = np.zeros((height, width, 4), dtype=np.uint8)
+# 0 = transparent / no data
+# 1-6 = dina översvämningsklasser
+COLORS = {
+    1: "#ADD8E6",
+    2: "#0000FF",
+    3: "#00008B",
+    4: "#800080",
+    5: "#FFA500",
+    6: "#FF0000",
+}
+
+
+def classify_to_classes(data, nodata=nodata_value):
+    classes = np.zeros(data.shape, dtype=np.uint8)
 
     data = data.astype(np.float32)
 
-    invalid = (
-        ~np.isfinite(data) |
-        (data == nodata) |
-        (data < 0.05) |
-        (data > 50)
+    valid = (
+        np.isfinite(data) &
+        (data != nodata) &
+        (data >= 0.05) &
+        (data <= 50)
     )
 
-    valid = ~invalid
+    classes[valid & (data >= 0.05) & (data < 0.5)] = 1
+    classes[valid & (data >= 0.5) & (data < 1.0)] = 2
+    classes[valid & (data >= 1.0) & (data < 1.5)] = 3
+    classes[valid & (data >= 1.5) & (data < 2.0)] = 4
+    classes[valid & (data >= 2.0) & (data < 4.0)] = 5
+    classes[valid & (data >= 4.0) & (data <= 50)] = 6
 
-    def apply_color(mask, color):
-        rgba[mask, 0] = color[0]
-        rgba[mask, 1] = color[1]
-        rgba[mask, 2] = color[2]
-        rgba[mask, 3] = color[3]
-
-    apply_color(valid & (data >= 0.05) & (data < 0.5), [173, 216, 230, 255])
-    apply_color(valid & (data >= 0.5) & (data < 1.0), [0, 0, 255, 255])
-    apply_color(valid & (data >= 1.0) & (data < 1.5), [0, 0, 139, 255])
-    apply_color(valid & (data >= 1.5) & (data < 2.0), [128, 0, 128, 255])
-    apply_color(valid & (data >= 2.0) & (data < 4.0), [255, 165, 0, 255])
-    apply_color(valid & (data >= 4.0) & (data <= 50), [255, 0, 0, 255])
-
-    return rgba
+    return classes
 
 
 # ----------------------------------------------------
@@ -76,14 +81,58 @@ def parse_time_name(file_name):
     return f"{clean_name[0]}_{clean_name[1]}"
 
 
-def save_png(rgba, output_path):
-    img = Image.fromarray(rgba, mode="RGBA")
-    img.save(output_path, optimize=True)
+def classes_to_svg(classes, output_path):
+    """
+    Skapar SVG med horisontella run-length-rects.
+    Varje sammanhängande radsekvens med samma klass blir en rect.
+    """
+    height, width = classes.shape
+    rect_count = 0
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" '
+        f'shape-rendering="crispEdges">',
+        '<g>'
+    ]
+
+    for y in range(height):
+        row = classes[y]
+        x = 0
+
+        while x < width:
+            cls = int(row[x])
+
+            if cls == 0:
+                x += 1
+                continue
+
+            start_x = x
+            x += 1
+
+            while x < width and int(row[x]) == cls:
+                x += 1
+
+            run_width = x - start_x
+            color = COLORS[cls]
+
+            parts.append(
+                f'<rect x="{start_x}" y="{y}" width="{run_width}" height="1" fill="{color}"/>'
+            )
+            rect_count += 1
+
+    parts.append('</g></svg>')
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(parts))
+
+    return rect_count
 
 
-def make_png_for_file(args):
-    file_path, time_name = args
-    png_output_path = os.path.join(output_dir, f"{time_name}.png")
+def make_svg_for_file(args):
+    file_path, time_name, output_dir = args
+    svg_output_path = os.path.join(output_dir, f"{time_name}.svg")
 
     with rasterio.open(file_path) as src:
         source_crs = src.crs if src.crs is not None else src_crs_fallback
@@ -96,7 +145,7 @@ def make_png_for_file(args):
             nodata=nodata_value,
             src_nodata=actual_nodata,
             dst_nodata=nodata_value,
-            resampling=Resampling.bilinear
+            resampling=Resampling.nearest
         ) as vrt:
 
             out_height = vrt.height * upscale_factor
@@ -114,8 +163,10 @@ def make_png_for_file(args):
             data[data < 0.05] = nodata_value
             data[data > 50] = nodata_value
 
-            rgba = classify_to_rgba(data, nodata=nodata_value)
-            save_png(rgba, png_output_path)
+            classes = classify_to_classes(data, nodata=nodata_value)
+            visible_pixels = int(np.count_nonzero(classes))
+
+            rect_count = classes_to_svg(classes, svg_output_path)
 
             west, south, east, north = transform_bounds(
                 dst_crs,
@@ -127,8 +178,7 @@ def make_png_for_file(args):
                 densify_pts=21
             )
 
-            visible_pixels = int(np.count_nonzero(rgba[:, :, 3]))
-            file_size_mb = os.path.getsize(png_output_path) / (1024 * 1024)
+            file_size_mb = os.path.getsize(svg_output_path) / (1024 * 1024)
 
             return {
                 "time_name": time_name,
@@ -139,8 +189,9 @@ def make_png_for_file(args):
                     "north": north
                 },
                 "visible_pixels": visible_pixels,
-                "width": int(rgba.shape[1]),
-                "height": int(rgba.shape[0]),
+                "rect_count": rect_count,
+                "width": int(classes.shape[1]),
+                "height": int(classes.shape[0]),
                 "file_size_mb": file_size_mb,
                 "warning": src.crs is None
             }
@@ -236,10 +287,10 @@ if __name__ == "__main__":
                 {"label": "2.0–4.0 m", "color": "#FFA500"},
                 {"label": "4+ m", "color": "#FF0000"}
             ],
-            "opacityDefault": 0.8,
+            "opacityDefault": config.get("opacity", 0.8),
             "timeStepHours": 1,
-            "fileType": "png",
-            "imageUrlTemplate": "{time}.png",
+            "fileType": "svg",
+            "imageUrlTemplate": "{time}.svg",
             "upscaleFactor": upscale_factor
         }
 

@@ -16,7 +16,7 @@ let isPlaying = false;
 let playTimer = null;
 let playSpeedMs = 500;
 
-const casesJsonPath = 'floodmaps_mercator_png/base_cases/cases.json';
+const casesJsonPath = 'floodmaps_mercator_svg/base_cases/cases.json';
 
 function formatTextTimeStamp(ts) {
   if (typeof ts !== 'string' || ts.length < 13) return ts;
@@ -30,7 +30,7 @@ function getEnabledCases() {
 }
 
 function getImageUrl(caseItem, time) {
-  return `${caseItem.path}/${time}.png`;
+  return `${caseItem.path}/${time}.svg`;
 }
 
 function getBounds(caseItem) {
