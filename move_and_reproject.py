@@ -6,7 +6,6 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 import rasterio
-from PIL import Image
 from rasterio.vrt import WarpedVRT
 from rasterio.enums import Resampling
 from rasterio.warp import transform_bounds
@@ -15,9 +14,6 @@ from rasterio.warp import transform_bounds
 # ----------------------------------------------------
 # KONFIGURATION
 # ----------------------------------------------------
-input_dir = r'C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\hiprad\base_hiprad\postprocessed\run0'
-output_dir = r'C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_png\base_cases\hiprad'
-
 case_id = "hiprad"
 case_name = "HIPRAD"
 
@@ -28,10 +24,216 @@ nodata_value = -9999.0
 # SVG bör helst köras 1:1 först. Höj bara om du verkligen vill testa.
 upscale_factor = 1
 
-# Börja med 4. Högre värde kan bli snabbare men använda mycket RAM.
 max_workers = 8
 
-web_case_path = "floodmaps_mercator_png/base_cases/hiprad"
+web_case_path = "floodmaps_mercator_svg/base_cases/hiprad"
+
+# ----------------------------------------------------
+# DATAKÄLLOR / CASES
+# ----------------------------------------------------
+DATA_SOURCES = [
+    #base cases
+    {
+        "case_id": "base_hiprad",
+        "case_name": "HIPRAD",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\hiprad\base_hiprad\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\base_cases\base_hiprad",
+        "web_case_path": "floodmaps_mercator_svg/base_cases/base_hiprad",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "base_cheddarobs",
+        "case_name": "Cheddar Obs",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\cheddarobs\base_cheddarobs\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\base_cases\base_cheddarobs",
+        "web_case_path": "floodmaps_mercator_svg/base_cases/base_cheddarobs",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "base_baltrad",
+        "case_name": "BALTRAD",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\500m\base\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\base_cases\BALTRAD",
+        "web_case_path": "floodmaps_mercator_svg/base_cases/BALTRAD",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "base_obsradar",
+        "case_name": "Observational Radar",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\obsradar\base\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\base_cases\OBSRADAR",
+        "web_case_path": "floodmaps_mercator_svg/base_cases/OBSRADAR",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "base_PTHVB",
+        "case_name": "PTHVB",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\PTHVB\base_PTHVB\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\base_cases\PTHVB",
+        "web_case_path": "floodmaps_mercator_svg/base_cases/PTHVB",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    #sensitivity ansalysis cases
+    {
+        "case_id": "sens_initial_moisture_0,5",
+        "case_name": "Initial Soil Moisture 50%",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\hiprad\sensativity analysis\initial_moisture_0,5\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\initial_moisture_0,5",
+        "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/initial_moisture_0,5",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "sens_initial_moisture_1,0",
+        "case_name": "Initial Soil Moisture 100%",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\hiprad\sensativity analysis\initial_moisture_wet\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\initial_moisture_1,0",
+        "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/initial_moisture_1,0",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "sens_manning_1,1",
+        "case_name": "Manning's n +10%",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\hiprad\sensativity analysis\maning_x.1.1\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\manning_1,1",
+        "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/manning_1,1",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "sens_manning_0,9",
+        "case_name": "Manning's n -10%",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\hiprad\sensativity analysis\manning_x0.9\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\manning_0,9",
+        "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/manning_0,9",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "sens_res2m",
+        "case_name": "Resolution 2m",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\hiprad\sensativity analysis\res_2m\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\res_2m",
+        "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/res_2m",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "sens_res10m",
+        "case_name": "Resolution 10m",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\hiprad\sensativity analysis\res_10m\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\res_10m",
+        "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/res_10m",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "sens_start_2025_09_04",
+        "case_name": "Start 2025-09-04",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\hiprad\sensativity analysis\start_2025_09_04\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\start_2025_09_04",
+        "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/start_2025_09_04",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "sens_start_2025_09_06",
+        "case_name": "Start 2025-09-06",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\hiprad\sensativity analysis\start_2025_09_06\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\start_2025_09_06",
+        "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/start_2025_09_06",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "sens_wet_inf_50%",
+        "case_name": "Green and Ampt timestep 30 min",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\hiprad\sensativity analysis\wet_inf_50%\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\wet_inf_50%",
+        "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/wet_inf_50%",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "sens_wet_inf_200%",
+        "case_name": "Green and Ampt timestep 2 hours",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\hiprad\sensativity analysis\wet_inf_200%\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\wet_inf_200%",
+        "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/wet_inf_200%",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "sens_ws_+1",
+        "case_name": "Water Surface Correction +1m",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\hiprad\sensativity analysis\ws_+1\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\ws_+1",
+        "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/ws_+1",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "sens_ws_-1",
+        "case_name": "Water Surface Correction -1m",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial\hiprad\sensativity analysis\ws_-1\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\ws_-1",
+        "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/ws_-1",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    # Combined event cases
+    {
+        "case_id": "combined_free",
+        "case_name": "FREE",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial_fluvial\Final\FREE\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\combined_cases\free",
+        "web_case_path": "floodmaps_mercator_svg/combined_cases/free",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "combined_hfix_110",
+        "case_name": "HFIX 110m",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial_fluvial\Final\HFIX_110\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\combined_cases\hfix_110",
+        "web_case_path": "floodmaps_mercator_svg/combined_cases/hfix_110",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "combined_hfix_111",
+        "case_name": "HFIX 111m",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial_fluvial\Final\HFIX_111\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\combined_cases\hfix_111",
+        "web_case_path": "floodmaps_mercator_svg/combined_cases/hfix_111",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "combined_hfix_112",
+        "case_name": "HFIX 112m",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial_fluvial\Final\HFIX_112\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\combined_cases\hfix_112",
+        "web_case_path": "floodmaps_mercator_svg/combined_cases/hfix_112",
+        "enabled": True,
+        "opacity": 0.8
+    },
+    {
+        "case_id": "combined_hfix_113",
+        "case_name": "HFIX 113m",
+        "input_dir": r"C:\Users\k000952\Dokument\QGIS\Modeling results\Pluvial_fluvial\Final\HFIX_113\postprocessed\run0",
+        "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\combined_cases\hfix_113",
+        "web_case_path": "floodmaps_mercator_svg/combined_cases/hfix_113",
+        "enabled": True,
+        "opacity": 0.8
+    },
+]
 
 
 # ----------------------------------------------------
@@ -195,12 +397,13 @@ def make_svg_for_file(args):
                 "file_size_mb": file_size_mb,
                 "warning": src.crs is None
             }
+        
+def process_case(config):
+    input_dir = config["input_dir"]
+    output_dir = config["output_dir"]
+    case_id = config["case_id"]
+    case_name = config["case_name"]
 
-
-# ----------------------------------------------------
-# MAIN
-# ----------------------------------------------------
-if __name__ == "__main__":
     if os.path.exists(output_dir):
         shutil.rmtree(output_dir)
 
@@ -208,7 +411,12 @@ if __name__ == "__main__":
 
     files = sorted(glob.glob(os.path.join(input_dir, "res-*.tif")))
 
+    if not files:
+        print(f"Inga filer hittades för {case_name}")
+        return None
+
     jobs = []
+
     for file_path in files:
         file_name = os.path.basename(file_path)
         time_name = parse_time_name(file_name)
@@ -217,56 +425,38 @@ if __name__ == "__main__":
             print(f"Hoppar över fil med oväntat namn: {file_name}")
             continue
 
-        jobs.append((file_path, time_name))
+        jobs.append((file_path, time_name, output_dir))
 
-    print(f"Hittade {len(jobs)} filer. Startar parallell PNG-export med {max_workers} workers...")
+    print(f"Hittade {len(jobs)} filer för {case_name}")
 
     all_bounds_4326 = []
     generated_time_steps = []
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(make_png_for_file, job) for job in jobs]
+        futures = [executor.submit(make_svg_for_file, job) for job in jobs]
 
         for future in as_completed(futures):
             try:
                 result = future.result()
-
                 time_name = result["time_name"]
-
-                if result["warning"]:
-                    print(f"Obs: {time_name} saknar CRS, antar {src_crs_fallback}")
 
                 all_bounds_4326.append(result["bounds"])
                 generated_time_steps.append(time_name)
 
                 print(
-                    f"Klar: {time_name}.png | "
-                    f"{result['width']}x{result['height']} | "
+                    f"Klar: {case_name} / {time_name}.svg | "
                     f"{result['file_size_mb']:.2f} MB | "
-                    f"synliga pixlar: {result['visible_pixels']}"
+                    f"rects: {result['rect_count']}"
                 )
 
-                if result["visible_pixels"] == 0:
-                    print(f"Ingen översvämning synlig för {time_name}, men tidssteget sparas.")
-
             except Exception as e:
-                print(f"Fel i ett jobb: {e}")
+                print(f"Fel i {case_name}: {e}")
 
-    # ----------------------------------------------------
-    # MANIFEST
-    # ----------------------------------------------------
     generated_time_steps = sorted(generated_time_steps)
 
-    manifest_path = os.path.join(output_dir, "manifest.json")
-
-    with open(manifest_path, "w", encoding="utf-8") as f:
+    with open(os.path.join(output_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(generated_time_steps, f, indent=2)
 
-    print(f"\nSkapade manifest.json med {len(generated_time_steps)} tidssteg.")
-
-    # ----------------------------------------------------
-    # METADATA
-    # ----------------------------------------------------
     if all_bounds_4326:
         metadata = {
             "caseId": case_id,
@@ -294,32 +484,40 @@ if __name__ == "__main__":
             "upscaleFactor": upscale_factor
         }
 
-        metadata_path = os.path.join(output_dir, "metadata.json")
-
-        with open(metadata_path, "w", encoding="utf-8") as f:
+        with open(os.path.join(output_dir, "metadata.json"), "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
 
-        print("Skapade metadata.json.")
-    else:
-        print("Kunde inte skapa metadata.json eftersom inga bounds hittades.")
+    print(f"Färdig med case: {case_name}")
+    return True
 
-    # ----------------------------------------------------
-    # CASES.JSON
-    # ----------------------------------------------------
-    cases_path = os.path.join(os.path.dirname(output_dir), "cases.json")
 
-    case_entry = [
-        {
-            "id": case_id,
-            "name": case_name,
-            "path": web_case_path,
-            "enabled": True,
-            "opacity": 0.8
-        }
-    ]
+# ----------------------------------------------------
+# MAIN
+# ----------------------------------------------------
+if __name__ == "__main__":
+    all_case_entries = []
+
+    for config in DATA_SOURCES:
+        print("\n" + "=" * 80)
+        print(f"Startar case: {config['case_name']}")
+        print("=" * 80)
+
+        result = process_case(config)
+
+        if result is not None:
+            all_case_entries.append({
+                "id": config["case_id"],
+                "name": config["case_name"],
+                "path": config["web_case_path"],
+                "enabled": config.get("enabled", False),
+                "opacity": config.get("opacity", 0.8)
+            })
+
+    cases_path = r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\base_cases\cases.json"
 
     with open(cases_path, "w", encoding="utf-8") as f:
-        json.dump(case_entry, f, indent=2)
+        json.dump(all_case_entries, f, indent=2)
 
-    print("Skapade cases.json.")
-    print("\nAllt klart!")
+    print(f"\nSkapade global cases.json med {len(all_case_entries)} cases.")
+    print("Allt klart!")
+
