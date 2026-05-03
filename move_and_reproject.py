@@ -8,9 +8,15 @@ import rasterio
 import mercantile
 
 from PIL import Image
+from rasterio.vrt import WarpedVRT
 from rasterio.enums import Resampling
 from rasterio.warp import reproject
 from rasterio.transform import from_bounds
+from rasterio.warp import (
+    reproject,
+    transform_bounds,
+    Resampling
+)
 
 
 # ----------------------------------------------------
@@ -28,13 +34,13 @@ dst_crs = "EPSG:3857"
 nodata_value = -9999.0
 
 zoom_min = 10
-zoom_max = 16
+zoom_max = 14
 
 tile_size = 256
 
 # True = sparar bara tiles där översvämning finns
 # False = sparar även tomma transparenta tiles
-skip_empty_tiles = True
+skip_empty_tiles = False
 
 # Detta ska matcha hur webben når filerna
 web_case_path = "floodmaps_mercator_tiles/base_cases/hiprad"
@@ -126,88 +132,84 @@ def make_tiles_for_file(file_path, time_name):
 
         actual_nodata = src.nodata if src.nodata is not None else nodata_value
 
-        bounds_4326_tuple = transform_bounds(
-            source_crs,
-            "EPSG:4326",
-            src.bounds.left,
-            src.bounds.bottom,
-            src.bounds.right,
-            src.bounds.top,
-            densify_pts=21
-        )
+        with WarpedVRT(
+            src,
+            src_crs=source_crs,
+            crs=dst_crs,
+            nodata=nodata_value,
+            src_nodata=actual_nodata,
+            dst_nodata=nodata_value,
+            resampling=Resampling.nearest
+        ) as vrt:
 
-        west, south, east, north = bounds_4326_tuple
+            bounds_4326_tuple = transform_bounds(
+                dst_crs,
+                "EPSG:4326",
+                vrt.bounds.left,
+                vrt.bounds.bottom,
+                vrt.bounds.right,
+                vrt.bounds.top,
+                densify_pts=21
+            )
 
-        bounds_4326 = {
-            "west": west,
-            "south": south,
-            "east": east,
-            "north": north
-        }
+            west, south, east, north = bounds_4326_tuple
 
-        total_tiles = 0
-        written_tiles = 0
+            bounds_4326 = {
+                "west": west,
+                "south": south,
+                "east": east,
+                "north": north
+            }
 
-        for z in range(zoom_min, zoom_max + 1):
-            tiles = list(mercantile.tiles(west, south, east, north, [z]))
+            total_tiles = 0
+            written_tiles = 0
 
-            for tile in tiles:
-                total_tiles += 1
+            for z in range(zoom_min, zoom_max + 1):
+                tiles = list(mercantile.tiles(west, south, east, north, [z]))
 
-                tb = mercantile.xy_bounds(tile)
+                for tile in tiles:
+                    total_tiles += 1
 
-                dst_transform = from_bounds(
-                    tb.left,
-                    tb.bottom,
-                    tb.right,
-                    tb.top,
-                    tile_size,
-                    tile_size
-                )
+                    tb = mercantile.xy_bounds(tile)
 
-                data = np.full(
-                    (tile_size, tile_size),
-                    nodata_value,
-                    dtype=np.float32
-                )
+                    window = vrt.window(
+                        tb.left,
+                        tb.bottom,
+                        tb.right,
+                        tb.top
+                    )
 
-                reproject(
-                    source=rasterio.band(src, 1),
-                    destination=data,
-                    src_transform=src.transform,
-                    src_crs=source_crs,
-                    src_nodata=actual_nodata,
-                    dst_transform=dst_transform,
-                    dst_crs=dst_crs,
-                    dst_nodata=nodata_value,
-                    resampling=Resampling.nearest
-                )
+                    data = vrt.read(
+                        1,
+                        window=window,
+                        out_shape=(tile_size, tile_size),
+                        fill_value=nodata_value,
+                        resampling=Resampling.nearest
+                    ).astype(np.float32)
 
-                # Extra säkerhet: allt orimligt blir transparent
-                data[~np.isfinite(data)] = nodata_value
-                data[data == actual_nodata] = nodata_value
-                data[data < 0.05] = nodata_value
-                data[data > 50] = nodata_value
+                    data[~np.isfinite(data)] = nodata_value
+                    data[data == actual_nodata] = nodata_value
+                    data[data < 0.05] = nodata_value
+                    data[data > 50] = nodata_value
 
-                rgba = classify_to_rgba(data, nodata=nodata_value)
+                    rgba = classify_to_rgba(data, nodata=nodata_value)
 
-                if skip_empty_tiles and np.all(rgba[:, :, 3] == 0):
-                    continue
+                    if skip_empty_tiles and np.all(rgba[:, :, 3] == 0):
+                        continue
 
-                tile_path = os.path.join(
-                    tiles_output_path,
-                    str(z),
-                    str(tile.x),
-                    f"{tile.y}.png"
-                )
+                    tile_path = os.path.join(
+                        tiles_output_path,
+                        str(z),
+                        str(tile.x),
+                        f"{tile.y}.png"
+                    )
 
-                save_png_tile(rgba, tile_path)
-                written_tiles += 1
+                    save_png_tile(rgba, tile_path)
+                    written_tiles += 1
 
-        print(f"Klar: {time_name} | tiles skapade: {written_tiles}/{total_tiles}")
+            print(f"Klar: {time_name} | tiles skapade: {written_tiles}/{total_tiles}")
 
-        return bounds_4326, written_tiles
-
+            return bounds_4326, written_tiles
 # ----------------------------------------------------
 # HUVUDLOOP
 # ----------------------------------------------------
