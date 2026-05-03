@@ -407,29 +407,51 @@ L.Control.CaseControl = L.Control.extend({
 
     const categoryOrder = ["base", "sensitivity", "combined"];
 
-    categoryOrder.forEach(category => {
+   categoryOrder.forEach(category => {
       const categoryCases = groupedCases[category];
 
       if (!categoryCases || categoryCases.length === 0) return;
 
-      const categoryBlock = L.DomUtil.create("div", "case-category", layerList);
+      const categoryBlock = L.DomUtil.create("div", "case-category is-open", layerList);
 
-      const categoryHeader = L.DomUtil.create("label", "case-category-header", categoryBlock);
+      const categoryHeader = L.DomUtil.create("div", "case-category-header", categoryBlock);
 
       const categoryCheckBox = L.DomUtil.create("input", "case-category-checkbox", categoryHeader);
       categoryCheckBox.type = "checkbox";
 
-      const categoryTitle = L.DomUtil.create("span", "case-category-title", categoryHeader);
-      categoryTitle.textContent = CASE_CATEGORY_LABELS[category] || category;
+      const categoryToggle = L.DomUtil.create("button", "case-category-toggle", categoryHeader);
+      categoryToggle.type = "button";
+      categoryToggle.textContent = CASE_CATEGORY_LABELS[category] || category;
+
+      const categoryArrow = L.DomUtil.create("span", "case-category-arrow", categoryHeader);
+      categoryArrow.textContent = "🡡";
+
+      const categoryContent = L.DomUtil.create("div", "case-category-content", categoryBlock);
 
       this._categoryCheckboxes[category] = categoryCheckBox;
+
+      let isCategoryOpen = true;
+
+      function setCategoryOpen(open) {
+        isCategoryOpen = open;
+        categoryBlock.classList.toggle("is-open", isCategoryOpen);
+        categoryArrow.textContent = isCategoryOpen ? "🡡" : "🡣";
+      }
+
+      categoryToggle.addEventListener("click", () => {
+        setCategoryOpen(!isCategoryOpen);
+      });
+
+      categoryArrow.addEventListener("click", () => {
+        setCategoryOpen(!isCategoryOpen);
+      });
 
       categoryCheckBox.addEventListener("change", () => {
         setCategoryEnabled(category, categoryCheckBox.checked);
       });
 
       categoryCases.forEach(caseItem => {
-        const row = L.DomUtil.create("div", "case-row", categoryBlock);
+        const row = L.DomUtil.create("div", "case-row", categoryContent);
 
         const header = L.DomUtil.create("div", "case-row-header", row);
 
