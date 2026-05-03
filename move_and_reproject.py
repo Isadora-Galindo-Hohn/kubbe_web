@@ -33,7 +33,7 @@ dst_crs = "EPSG:3857"
 
 nodata_value = -9999.0
 
-zoom_min = 10
+zoom_min = 14
 zoom_max = 14
 
 tile_size = 256
@@ -125,7 +125,7 @@ def make_tiles_for_file(file_path, time_name):
         shutil.rmtree(tiles_output_path)
 
     with rasterio.open(file_path) as src:
-        source_crs = src.crs if src.crs is not None else src_crs_fallback
+        source_crs = rasterio.crs.CRS.from_epsg(3006)
 
         if src.crs is None:
             print(f"Obs: {os.path.basename(file_path)} saknar CRS, antar {src_crs_fallback}")

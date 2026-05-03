@@ -73,7 +73,9 @@ function loadTimeIndex(index) {
 
     const newLayer = L.tileLayer(getTileUrl(caseItem, time), {
       opacity: 0,
-      maxNativeZoom: metadataByCase[caseItem.id]?.zoomMax ?? 14,
+      minNativeZoom: 14,
+      maxNativeZoom: 14,
+      minZoom: 10,
       maxZoom: 18,
       tms: false,
       zIndex: 500,
