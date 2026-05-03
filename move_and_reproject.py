@@ -2,6 +2,7 @@ import os
 import glob
 import json
 import shutil
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 import rasterio
@@ -25,13 +26,10 @@ dst_crs = "EPSG:3857"
 nodata_value = -9999.0
 upscale_factor = 4
 
+# Börja med 4. Högre värde kan bli snabbare men använda mycket RAM.
+max_workers = 8
+
 web_case_path = "floodmaps_mercator_png/base_cases/hiprad"
-
-# Rensa gammal output för detta case
-if os.path.exists(output_dir):
-    shutil.rmtree(output_dir)
-
-os.makedirs(output_dir, exist_ok=True)
 
 
 # ----------------------------------------------------
@@ -67,6 +65,7 @@ def classify_to_rgba(data, nodata=nodata_value):
 
     return rgba
 
+
 # ----------------------------------------------------
 # HJÄLPFUNKTIONER
 # ----------------------------------------------------
@@ -82,15 +81,12 @@ def save_png(rgba, output_path):
     img.save(output_path, optimize=True)
 
 
-def make_png_for_file(file_path, time_name):
+def make_png_for_file(args):
+    file_path, time_name = args
     png_output_path = os.path.join(output_dir, f"{time_name}.png")
 
     with rasterio.open(file_path) as src:
         source_crs = src.crs if src.crs is not None else src_crs_fallback
-
-        if src.crs is None:
-            print(f"Obs: {os.path.basename(file_path)} saknar CRS, antar {src_crs_fallback}")
-
         actual_nodata = src.nodata if src.nodata is not None else nodata_value
 
         with WarpedVRT(
@@ -110,7 +106,7 @@ def make_png_for_file(file_path, time_name):
                 1,
                 out_shape=(out_height, out_width),
                 fill_value=nodata_value,
-                resampling=Resampling.bilinear
+                resampling=Resampling.nearest
             ).astype(np.float32)
 
             data[~np.isfinite(data)] = nodata_value
@@ -119,10 +115,9 @@ def make_png_for_file(file_path, time_name):
             data[data > 50] = nodata_value
 
             rgba = classify_to_rgba(data, nodata=nodata_value)
-
             save_png(rgba, png_output_path)
 
-            bounds_4326_tuple = transform_bounds(
+            west, south, east, north = transform_bounds(
                 dst_crs,
                 "EPSG:4326",
                 vrt.bounds.left,
@@ -132,126 +127,148 @@ def make_png_for_file(file_path, time_name):
                 densify_pts=21
             )
 
-            west, south, east, north = bounds_4326_tuple
+            visible_pixels = int(np.count_nonzero(rgba[:, :, 3]))
+            file_size_mb = os.path.getsize(png_output_path) / (1024 * 1024)
 
-            bounds_4326 = {
-                "west": west,
-                "south": south,
-                "east": east,
-                "north": north
+            return {
+                "time_name": time_name,
+                "bounds": {
+                    "west": west,
+                    "south": south,
+                    "east": east,
+                    "north": north
+                },
+                "visible_pixels": visible_pixels,
+                "width": int(rgba.shape[1]),
+                "height": int(rgba.shape[0]),
+                "file_size_mb": file_size_mb,
+                "warning": src.crs is None
             }
 
-            visible_pixels = np.count_nonzero(rgba[:, :, 3])
-
-            print(
-                f"Klar: {time_name}.png | "
-                f"storlek: {rgba.shape[1]}x{rgba.shape[0]} | "
-                f"synliga pixlar: {visible_pixels}"
-            )
-
-            return bounds_4326, visible_pixels
-
 
 # ----------------------------------------------------
-# HUVUDLOOP
+# MAIN
 # ----------------------------------------------------
-files = sorted(glob.glob(os.path.join(input_dir, "res-*.tif")))
+if __name__ == "__main__":
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
 
-print(f"Hittade {len(files)} filer. Startar export till stora PNG-overlays...")
+    os.makedirs(output_dir, exist_ok=True)
 
-all_bounds_4326 = []
-generated_time_steps = []
+    files = sorted(glob.glob(os.path.join(input_dir, "res-*.tif")))
 
-for file_path in files:
-    file_name = os.path.basename(file_path)
-    time_name = parse_time_name(file_name)
+    jobs = []
+    for file_path in files:
+        file_name = os.path.basename(file_path)
+        time_name = parse_time_name(file_name)
 
-    if time_name is None:
-        print(f"Hoppar över fil med oväntat namn: {file_name}")
-        continue
+        if time_name is None:
+            print(f"Hoppar över fil med oväntat namn: {file_name}")
+            continue
 
-    try:
-        bounds_4326, visible_pixels = make_png_for_file(file_path, time_name)
+        jobs.append((file_path, time_name))
 
-        all_bounds_4326.append(bounds_4326)
-        generated_time_steps.append(time_name)
+    print(f"Hittade {len(jobs)} filer. Startar parallell PNG-export med {max_workers} workers...")
 
-        if visible_pixels == 0:
-            print(f"Ingen översvämning synlig för {time_name}, men PNG och tidssteg sparas.")
+    all_bounds_4326 = []
+    generated_time_steps = []
 
-    except Exception as e:
-        print(f"Fel för {time_name}: {e}")
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(make_png_for_file, job) for job in jobs]
 
+        for future in as_completed(futures):
+            try:
+                result = future.result()
 
-# ----------------------------------------------------
-# MANIFEST
-# ----------------------------------------------------
-generated_time_steps = sorted(generated_time_steps)
+                time_name = result["time_name"]
 
-manifest_path = os.path.join(output_dir, "manifest.json")
+                if result["warning"]:
+                    print(f"Obs: {time_name} saknar CRS, antar {src_crs_fallback}")
 
-with open(manifest_path, "w", encoding="utf-8") as f:
-    json.dump(generated_time_steps, f, indent=2)
+                all_bounds_4326.append(result["bounds"])
+                generated_time_steps.append(time_name)
 
-print(f"\nSkapade manifest.json med {len(generated_time_steps)} tidssteg.")
+                print(
+                    f"Klar: {time_name}.png | "
+                    f"{result['width']}x{result['height']} | "
+                    f"{result['file_size_mb']:.2f} MB | "
+                    f"synliga pixlar: {result['visible_pixels']}"
+                )
 
+                if result["visible_pixels"] == 0:
+                    print(f"Ingen översvämning synlig för {time_name}, men tidssteget sparas.")
 
-# ----------------------------------------------------
-# METADATA
-# ----------------------------------------------------
-if all_bounds_4326:
-    metadata = {
-        "caseId": case_id,
-        "name": case_name,
-        "crs": "EPSG:3857",
-        "displayBoundsCrs": "EPSG:4326",
-        "bounds": {
-            "west": min(b["west"] for b in all_bounds_4326),
-            "south": min(b["south"] for b in all_bounds_4326),
-            "east": max(b["east"] for b in all_bounds_4326),
-            "north": max(b["north"] for b in all_bounds_4326)
-        },
-        "classes": [
-            {"label": "0.05–0.5 m", "color": "#ADD8E6"},
-            {"label": "0.5–1.0 m", "color": "#0000FF"},
-            {"label": "1.0–1.5 m", "color": "#00008B"},
-            {"label": "1.5–2.0 m", "color": "#800080"},
-            {"label": "2.0–4.0 m", "color": "#FFA500"},
-            {"label": "4+ m", "color": "#FF0000"}
-        ],
-        "opacityDefault": 0.8,
-        "timeStepHours": 1,
-        "fileType": "png",
-        "imageUrlTemplate": "{time}.png"
-    }
+            except Exception as e:
+                print(f"Fel i ett jobb: {e}")
 
-    metadata_path = os.path.join(output_dir, "metadata.json")
+    # ----------------------------------------------------
+    # MANIFEST
+    # ----------------------------------------------------
+    generated_time_steps = sorted(generated_time_steps)
 
-    with open(metadata_path, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=2)
+    manifest_path = os.path.join(output_dir, "manifest.json")
 
-    print("Skapade metadata.json.")
-else:
-    print("Kunde inte skapa metadata.json eftersom inga bounds hittades.")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(generated_time_steps, f, indent=2)
 
+    print(f"\nSkapade manifest.json med {len(generated_time_steps)} tidssteg.")
 
-# ----------------------------------------------------
-# CASES.JSON
-# ----------------------------------------------------
-cases_path = os.path.join(os.path.dirname(output_dir), "cases.json")
+    # ----------------------------------------------------
+    # METADATA
+    # ----------------------------------------------------
+    if all_bounds_4326:
+        metadata = {
+            "caseId": case_id,
+            "name": case_name,
+            "crs": "EPSG:3857",
+            "displayBoundsCrs": "EPSG:4326",
+            "bounds": {
+                "west": min(b["west"] for b in all_bounds_4326),
+                "south": min(b["south"] for b in all_bounds_4326),
+                "east": max(b["east"] for b in all_bounds_4326),
+                "north": max(b["north"] for b in all_bounds_4326)
+            },
+            "classes": [
+                {"label": "0.05–0.5 m", "color": "#ADD8E6"},
+                {"label": "0.5–1.0 m", "color": "#0000FF"},
+                {"label": "1.0–1.5 m", "color": "#00008B"},
+                {"label": "1.5–2.0 m", "color": "#800080"},
+                {"label": "2.0–4.0 m", "color": "#FFA500"},
+                {"label": "4+ m", "color": "#FF0000"}
+            ],
+            "opacityDefault": 0.8,
+            "timeStepHours": 1,
+            "fileType": "png",
+            "imageUrlTemplate": "{time}.png",
+            "upscaleFactor": upscale_factor
+        }
 
-case_entry = [
-    {
-        "id": case_id,
-        "name": case_name,
-        "path": web_case_path,
-        "enabled": True,
-        "opacity": 0.8
-    }
-]
+        metadata_path = os.path.join(output_dir, "metadata.json")
 
-with open(cases_path, "w", encoding="utf-8") as f:
-    json.dump(case_entry, f, indent=2)
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
 
-print("Skapade cases.json.")
-print("\nAllt klart!")
+        print("Skapade metadata.json.")
+    else:
+        print("Kunde inte skapa metadata.json eftersom inga bounds hittades.")
+
+    # ----------------------------------------------------
+    # CASES.JSON
+    # ----------------------------------------------------
+    cases_path = os.path.join(os.path.dirname(output_dir), "cases.json")
+
+    case_entry = [
+        {
+            "id": case_id,
+            "name": case_name,
+            "path": web_case_path,
+            "enabled": True,
+            "opacity": 0.8
+        }
+    ]
+
+    with open(cases_path, "w", encoding="utf-8") as f:
+        json.dump(case_entry, f, indent=2)
+
+    print("Skapade cases.json.")
+    print("\nAllt klart!")

@@ -79,7 +79,7 @@ function loadTimeIndex(index) {
     const newLayer = L.imageOverlay(imageUrl, bounds, {
       opacity: 0,
       interactive: false,
-      zIndex: 500
+      zIndex: 500,
     });
 
     pendingImageLayers[caseItem.id] = newLayer;
