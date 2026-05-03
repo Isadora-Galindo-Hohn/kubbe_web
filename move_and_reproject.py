@@ -2,7 +2,11 @@ import os
 import glob
 import json
 import shutil
+import argparse
+import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from enum import StrEnum
+
 
 import numpy as np
 import rasterio
@@ -28,6 +32,13 @@ max_workers = 8
 
 web_case_path = "floodmaps_mercator_svg/base_cases/hiprad"
 
+cases_path = r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\cases.json"
+
+class CASE_CATEGORIES(StrEnum):
+    BASE = "base"
+    SENSITIVITY = "sensitivity"
+    COMBINED = "combined"
+
 # ----------------------------------------------------
 # DATAKÄLLOR / CASES
 # ----------------------------------------------------
@@ -40,7 +51,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\base_cases\base_hiprad",
         "web_case_path": "floodmaps_mercator_svg/base_cases/base_hiprad",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.BASE,
     },
     {
         "case_id": "base_cheddarobs",
@@ -49,7 +61,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\base_cases\base_cheddarobs",
         "web_case_path": "floodmaps_mercator_svg/base_cases/base_cheddarobs",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.BASE,
     },
     {
         "case_id": "base_baltrad",
@@ -58,7 +71,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\base_cases\BALTRAD",
         "web_case_path": "floodmaps_mercator_svg/base_cases/BALTRAD",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.BASE,
     },
     {
         "case_id": "base_obsradar",
@@ -67,7 +81,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\base_cases\OBSRADAR",
         "web_case_path": "floodmaps_mercator_svg/base_cases/OBSRADAR",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.BASE,
     },
     {
         "case_id": "base_PTHVB",
@@ -76,7 +91,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\base_cases\PTHVB",
         "web_case_path": "floodmaps_mercator_svg/base_cases/PTHVB",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.BASE,
     },
     #sensitivity ansalysis cases
     {
@@ -86,7 +102,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\initial_moisture_0,5",
         "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/initial_moisture_0,5",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.SENSITIVITY,
     },
     {
         "case_id": "sens_initial_moisture_1,0",
@@ -95,7 +112,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\initial_moisture_1,0",
         "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/initial_moisture_1,0",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.SENSITIVITY,
     },
     {
         "case_id": "sens_manning_1,1",
@@ -104,7 +122,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\manning_1,1",
         "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/manning_1,1",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.SENSITIVITY,
     },
     {
         "case_id": "sens_manning_0,9",
@@ -113,7 +132,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\manning_0,9",
         "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/manning_0,9",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.SENSITIVITY,
     },
     {
         "case_id": "sens_res2m",
@@ -122,7 +142,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\res_2m",
         "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/res_2m",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.SENSITIVITY,
     },
     {
         "case_id": "sens_res10m",
@@ -131,7 +152,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\res_10m",
         "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/res_10m",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.SENSITIVITY,
     },
     {
         "case_id": "sens_start_2025_09_04",
@@ -140,7 +162,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\start_2025_09_04",
         "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/start_2025_09_04",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.SENSITIVITY,
     },
     {
         "case_id": "sens_start_2025_09_06",
@@ -149,7 +172,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\start_2025_09_06",
         "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/start_2025_09_06",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.SENSITIVITY,
     },
     {
         "case_id": "sens_wet_inf_50%",
@@ -158,7 +182,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\wet_inf_50%",
         "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/wet_inf_50%",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.SENSITIVITY,
     },
     {
         "case_id": "sens_wet_inf_200%",
@@ -167,7 +192,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\wet_inf_200%",
         "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/wet_inf_200%",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.SENSITIVITY,
     },
     {
         "case_id": "sens_ws_+1",
@@ -176,7 +202,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\ws_+1",
         "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/ws_+1",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.SENSITIVITY,
     },
     {
         "case_id": "sens_ws_-1",
@@ -185,7 +212,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\sensitivity_analysis\ws_-1",
         "web_case_path": "floodmaps_mercator_svg/sensitivity_analysis/ws_-1",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.SENSITIVITY,
     },
     # Combined event cases
     {
@@ -195,7 +223,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\combined_cases\free",
         "web_case_path": "floodmaps_mercator_svg/combined_cases/free",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.COMBINED,
     },
     {
         "case_id": "combined_hfix_110",
@@ -204,7 +233,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\combined_cases\hfix_110",
         "web_case_path": "floodmaps_mercator_svg/combined_cases/hfix_110",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.COMBINED,
     },
     {
         "case_id": "combined_hfix_111",
@@ -213,7 +243,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\combined_cases\hfix_111",
         "web_case_path": "floodmaps_mercator_svg/combined_cases/hfix_111",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.COMBINED,
     },
     {
         "case_id": "combined_hfix_112",
@@ -222,7 +253,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\combined_cases\hfix_112",
         "web_case_path": "floodmaps_mercator_svg/combined_cases/hfix_112",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.COMBINED,
     },
     {
         "case_id": "combined_hfix_113",
@@ -231,7 +263,8 @@ DATA_SOURCES = [
         "output_dir": r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\combined_cases\hfix_113",
         "web_case_path": "floodmaps_mercator_svg/combined_cases/hfix_113",
         "enabled": True,
-        "opacity": 0.8
+        "opacity": 0.8,
+        "category": CASE_CATEGORIES.COMBINED,
     },
 ]
 
@@ -239,16 +272,34 @@ DATA_SOURCES = [
 # ----------------------------------------------------
 # KLASSNING
 # ----------------------------------------------------
+class COLORS(StrEnum):
+    LIGHT_BLUE = "#ADD8E6"  # 0.05–0.5 m
+    BLUE = "#0000FF"        # 0.5–1.0 m
+    DARK_BLUE = "#00008B"   # 1.0–1.5 m
+    MAGENTA = "#800080"     # 1.5–2.0 m
+    ORANGE = "#FFA500"      # 2.0–4.0 m
+    RED = "#FF0000"         # 4+ m
+
 # 0 = transparent / no data
 # 1-6 = dina översvämningsklasser
-COLORS = {
-    1: "#ADD8E6",
-    2: "#0000FF",
-    3: "#00008B",
-    4: "#800080",
-    5: "#FFA500",
-    6: "#FF0000",
+CLASS_COLORS = {
+    1: COLORS.LIGHT_BLUE,
+    2: COLORS.BLUE,
+    3: COLORS.DARK_BLUE,
+    4: COLORS.MAGENTA,
+    5: COLORS.ORANGE,
+    6: COLORS.RED,
 }
+
+
+CLASS_DEFINITIONS = [
+    {"class": 1, "label": "0.05–0.5 m", "color": COLORS.LIGHT_BLUE},
+    {"class": 2, "label": "0.5–1.0 m", "color": COLORS.BLUE},
+    {"class": 3, "label": "1.0–1.5 m", "color": COLORS.DARK_BLUE},
+    {"class": 4, "label": "1.5–2.0 m", "color": COLORS.MAGENTA},
+    {"class": 5, "label": "2.0–4.0 m", "color": COLORS.ORANGE},
+    {"class": 6, "label": "4+ m", "color": COLORS.RED},
+]
 
 
 def classify_to_classes(data, nodata=nodata_value):
@@ -317,7 +368,14 @@ def classes_to_svg(classes, output_path):
                 x += 1
 
             run_width = x - start_x
-            color = COLORS[cls]
+            color = CLASS_COLORS.get(cls)
+
+            if color is None:
+                raise ValueError(
+                    f"Saknar färg för klass {cls}. "
+                    f"Tillgängliga klasser: {list(CLASS_COLORS.keys())}. "
+                    f"Unika klasser i raster: {np.unique(classes).tolist()}"
+                )
 
             parts.append(
                 f'<rect x="{start_x}" y="{y}" width="{run_width}" height="1" fill="{color}"/>'
@@ -433,9 +491,14 @@ def process_case(config):
     generated_time_steps = []
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(make_svg_for_file, job) for job in jobs]
+        future_to_job = {
+            executor.submit(make_svg_for_file, job): job
+            for job in jobs
+        }
 
-        for future in as_completed(futures):
+        for future in as_completed(future_to_job):
+            file_path, time_name, output_dir = future_to_job[future]
+
             try:
                 result = future.result()
                 time_name = result["time_name"]
@@ -450,7 +513,13 @@ def process_case(config):
                 )
 
             except Exception as e:
-                print(f"Fel i {case_name}: {e}")
+                print("\n" + "!" * 80)
+                print(f"FEL I CASE: {case_name}")
+                print(f"FIL: {file_path}")
+                print(f"TIME_NAME: {time_name}")
+                print("TRACEBACK:")
+                traceback.print_exc()
+                print("!" * 80 + "\n")
 
     generated_time_steps = sorted(generated_time_steps)
 
@@ -461,6 +530,7 @@ def process_case(config):
         metadata = {
             "caseId": case_id,
             "name": case_name,
+            "category": config.get("category", CASE_CATEGORIES.BASE),
             "crs": "EPSG:3857",
             "displayBoundsCrs": "EPSG:4326",
             "bounds": {
@@ -469,14 +539,7 @@ def process_case(config):
                 "east": max(b["east"] for b in all_bounds_4326),
                 "north": max(b["north"] for b in all_bounds_4326)
             },
-            "classes": [
-                {"label": "0.05–0.5 m", "color": "#ADD8E6"},
-                {"label": "0.5–1.0 m", "color": "#0000FF"},
-                {"label": "1.0–1.5 m", "color": "#00008B"},
-                {"label": "1.5–2.0 m", "color": "#800080"},
-                {"label": "2.0–4.0 m", "color": "#FFA500"},
-                {"label": "4+ m", "color": "#FF0000"}
-            ],
+            "classes": CLASS_DEFINITIONS,
             "opacityDefault": config.get("opacity", 0.8),
             "timeStepHours": 1,
             "fileType": "svg",
@@ -490,14 +553,95 @@ def process_case(config):
     print(f"Färdig med case: {case_name}")
     return True
 
+# ---------------------------------------------------
+def build_cases_json_entries(data_sources):
+    entries = []
+
+    for config in data_sources:
+        entries.append({
+            "id": config["case_id"],
+            "name": config["case_name"],
+            "category": str(config.get("category", CASE_CATEGORIES.BASE)),
+            "path": config["web_case_path"],
+            "enabled": config.get("enabled", False),
+            "opacity": config.get("opacity", 0.8)
+        })
+
+    return entries
+
+
+def write_cases_json(data_sources, output_path):
+    all_case_entries = build_cases_json_entries(data_sources)
+
+    output_dir = os.path.dirname(output_path)
+    os.makedirs(output_dir, exist_ok=True)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(all_case_entries, f, indent=2)
+
+    print(f"Skapade cases.json med {len(all_case_entries)} cases:")
+    print(output_path)
+
+    return all_case_entries
+
 
 # ----------------------------------------------------
 # MAIN
 # ----------------------------------------------------
+# ----------------------------------------------------
+# MAIN
+# ----------------------------------------------------
 if __name__ == "__main__":
-    all_case_entries = []
+    parser = argparse.ArgumentParser(
+        description="Generera SVG-floodmaps och cases.json."
+    )
 
-    for config in DATA_SOURCES:
+    parser.add_argument(
+        "--cases-json-only",
+        action="store_true",
+        help="Skapa bara cases.json utan att processa raster/SVG-filer."
+    )
+
+    parser.add_argument(
+        "--case",
+        dest="case_ids",
+        action="append",
+        help=(
+            "Processa bara ett specifikt case_id. "
+            "Kan anges flera gånger, t.ex. --case base_hiprad --case combined_free."
+        )
+    )
+
+    args = parser.parse_args()
+
+    if args.case_ids:
+        selected_case_ids = set(args.case_ids)
+        selected_sources = [
+            config for config in DATA_SOURCES
+            if config["case_id"] in selected_case_ids
+        ]
+
+        missing_case_ids = selected_case_ids - {
+            config["case_id"] for config in selected_sources
+        }
+
+        if missing_case_ids:
+            print(f"Varning: hittade inte dessa case_id: {sorted(missing_case_ids)}")
+
+        if not selected_sources:
+            raise ValueError("Inga matchande cases hittades. Avbryter.")
+
+    else:
+        selected_sources = DATA_SOURCES
+
+    if args.cases_json_only:
+        write_cases_json(DATA_SOURCES, cases_path)
+        print("Allt klart!")
+        raise SystemExit(0)
+
+    processed_case_entries = []
+
+    for config in selected_sources:
         print("\n" + "=" * 80)
         print(f"Startar case: {config['case_name']}")
         print("=" * 80)
@@ -505,19 +649,19 @@ if __name__ == "__main__":
         result = process_case(config)
 
         if result is not None:
-            all_case_entries.append({
+            processed_case_entries.append({
                 "id": config["case_id"],
                 "name": config["case_name"],
+                "category": str(config.get("category", CASE_CATEGORIES.BASE)),
                 "path": config["web_case_path"],
                 "enabled": config.get("enabled", False),
                 "opacity": config.get("opacity", 0.8)
             })
 
-    cases_path = r"C:\Users\k000952\Dokument\QGIS\kubbe_web\floodmaps_mercator_svg\base_cases\cases.json"
+    # Viktigt:
+    # Skriv alltid global cases.json för ALLA cases, inte bara de processade.
+    # Annars försvinner oprocessade lager ur webappen.
+    write_cases_json(DATA_SOURCES, cases_path)
 
-    with open(cases_path, "w", encoding="utf-8") as f:
-        json.dump(all_case_entries, f, indent=2)
-
-    print(f"\nSkapade global cases.json med {len(all_case_entries)} cases.")
+    print(f"\nProcessade {len(processed_case_entries)} cases.")
     print("Allt klart!")
-
