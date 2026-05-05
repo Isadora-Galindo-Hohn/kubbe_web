@@ -1,0 +1,4 @@
+öppna en terminal och skriv
+python -m http.server
+
+I en webbläsare skriv in http://localhost:8000/
